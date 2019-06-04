@@ -159,7 +159,7 @@ pub extern "C" fn ursa_cl_proof_verifier_add_sub_proof_request(
         "ursa_cl_proof_verifier_add_sub_proof_request: <<< res: {:?}",
         res
     );
-    ErrorCode::Success
+    res
 }
 
 /// Verifies proof and deallocates proof verifier.
