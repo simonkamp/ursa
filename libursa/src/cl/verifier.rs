@@ -253,7 +253,7 @@ impl ProofVerifier {
                 );
             };
 
-            // Check that `m_hat`s of all common attributes are same. Also `m_hat` for each common attribute mut be present in each sub proof
+            // Check that `m_hat`s of all common attributes are same. Also `m_hat` for each common attribute must be present in each sub proof
             let attr_names: Vec<String> = self
                 .common_attributes
                 .keys()

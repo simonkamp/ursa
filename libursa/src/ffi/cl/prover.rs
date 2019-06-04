@@ -1268,6 +1268,9 @@ mod tests {
     use ffi::cl::prover::mocks::*;
     use std::ptr;
 
+    // Master secret is now called link secret.
+    pub static LINK_SECRET: &'static str = "master_secret";
+
     #[test]
     fn ursa_cl_prover_new_master_secret_works() {
         let mut master_secret_p: *const c_void = ptr::null();
@@ -1467,7 +1470,7 @@ mod tests {
         );
         let proof_builder = _proof_builder();
 
-        let common_attr_name = string_to_cstring(String::from("master_secret"));
+        let common_attr_name = string_to_cstring(String::from(LINK_SECRET));
         let err_code =
             ursa_cl_proof_builder_add_common_attribute(proof_builder, common_attr_name.as_ptr());
         assert_eq!(err_code, ErrorCode::Success);
@@ -1521,7 +1524,7 @@ mod tests {
             credential_issuance_nonce,
             credential_values,
             credential_pub_key,
-            credential_pub_key,
+            credential_priv_key,
         );
         _process_credential_signature(
             credential_signature,

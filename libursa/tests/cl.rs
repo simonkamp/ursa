@@ -17,6 +17,8 @@ mod cl_tests {
     use ursa::utils::logger::HLCryptoDefaultLogger;
 
     pub const PROVER_ID: &'static str = "CnEDk9HrMnmiHXEV1WFgbVCRteYnPqsJwrTdcZaNhFVW";
+    // Master secret is now called link secret.
+    pub static LINK_SECRET: &'static str = "master_secret";
 
     mod test {
         use super::*;
@@ -286,7 +288,7 @@ mod cl_tests {
             // 25. Prover creates proof for two sub proof requests
             let mut proof_builder = Prover::new_proof_builder().unwrap();
 
-            proof_builder.add_common_attribute("master_secret").unwrap();
+            proof_builder.add_common_attribute(LINK_SECRET).unwrap();
             proof_builder
                 .add_sub_proof_request(
                     &gvt_sub_proof_request,
@@ -510,7 +512,7 @@ mod cl_tests {
 
             // 11. Prover creates proof
             let mut proof_builder = Prover::new_proof_builder().unwrap();
-            proof_builder.add_common_attribute("master_secret").unwrap();
+            proof_builder.add_common_attribute(LINK_SECRET).unwrap();
             proof_builder
                 .add_sub_proof_request(
                     &sub_proof_request,
@@ -641,7 +643,7 @@ mod cl_tests {
 
             // 12. Prover creates proof
             let mut proof_builder = Prover::new_proof_builder().unwrap();
-            proof_builder.add_common_attribute("master_secret").unwrap();
+            proof_builder.add_common_attribute(LINK_SECRET).unwrap();
             proof_builder
                 .add_sub_proof_request(
                     &sub_proof_request,
@@ -776,7 +778,7 @@ mod cl_tests {
 
             // 13. Prover creates proof
             let mut proof_builder = Prover::new_proof_builder().unwrap();
-            proof_builder.add_common_attribute("master_secret").unwrap();
+            proof_builder.add_common_attribute(LINK_SECRET).unwrap();
             proof_builder
                 .add_sub_proof_request(
                     &sub_proof_request,
@@ -929,7 +931,7 @@ mod cl_tests {
 
             // 8. Prover creates proof builder
             let mut proof_builder = Prover::new_proof_builder().unwrap();
-            proof_builder.add_common_attribute("master_secret").unwrap();
+            proof_builder.add_common_attribute(LINK_SECRET).unwrap();
 
             // 9. Prover adds GVT sub proof request
             proof_builder
@@ -1114,7 +1116,7 @@ mod cl_tests {
 
             // 8. Prover creates proof builder
             let mut proof_builder = Prover::new_proof_builder().unwrap();
-            proof_builder.add_common_attribute("master_secret").unwrap();
+            proof_builder.add_common_attribute(LINK_SECRET).unwrap();
 
             // 9. Prover adds GVT sub proof request
             proof_builder
@@ -1150,9 +1152,7 @@ mod cl_tests {
             // 12. Verifier verifies proof for GVT and PQR sub proof requests
             let mut proof_verifier = Verifier::new_proof_verifier().unwrap();
             // Verifier expects link secret (named `master_secret` here) to be same in both credentials
-            proof_verifier
-                .add_common_attribute("master_secret")
-                .unwrap();
+            proof_verifier.add_common_attribute(LINK_SECRET).unwrap();
 
             proof_verifier
                 .add_sub_proof_request(
@@ -1307,7 +1307,7 @@ mod cl_tests {
 
             // 8. Prover creates proof builder
             let mut proof_builder = Prover::new_proof_builder().unwrap();
-            proof_builder.add_common_attribute("master_secret").unwrap();
+            proof_builder.add_common_attribute(LINK_SECRET).unwrap();
             // name attribute value is same across both gvt and pqr credentials
             proof_builder.add_common_attribute("name").unwrap();
 
@@ -1345,9 +1345,7 @@ mod cl_tests {
             // 12. Verifier verifies proof for GVT and PQR sub proof requests
             let mut proof_verifier = Verifier::new_proof_verifier().unwrap();
             // Verifier expects link secret (named `master_secret` here) to be same in both credentials
-            proof_verifier
-                .add_common_attribute("master_secret")
-                .unwrap();
+            proof_verifier.add_common_attribute(LINK_SECRET).unwrap();
             // Verifier expects attribute `name` to be same in both credentials
             proof_verifier.add_common_attribute("name").unwrap();
 
@@ -1499,7 +1497,7 @@ mod cl_tests {
 
             // 8. Prover creates proof builder
             let mut proof_builder = Prover::new_proof_builder().unwrap();
-            proof_builder.add_common_attribute("master_secret").unwrap();
+            proof_builder.add_common_attribute(LINK_SECRET).unwrap();
             // name attribute value is different in both gvt and pqr credentials
             proof_builder.add_common_attribute("name").unwrap();
 
@@ -1537,9 +1535,7 @@ mod cl_tests {
             // 12. Verifier verifies proof for GVT and XYZ sub proof requests
             let mut proof_verifier = Verifier::new_proof_verifier().unwrap();
             // Verifier expects link secret (named `master_secret` here) to be same in both credentials
-            proof_verifier
-                .add_common_attribute("master_secret")
-                .unwrap();
+            proof_verifier.add_common_attribute(LINK_SECRET).unwrap();
             // Verifier expects attribute `name` to be same in both credentials
             proof_verifier.add_common_attribute("name").unwrap();
             proof_verifier
@@ -1696,7 +1692,7 @@ mod cl_tests {
 
             // 8. Prover creates proof builder
             let mut proof_builder = Prover::new_proof_builder().unwrap();
-            proof_builder.add_common_attribute("master_secret").unwrap();
+            proof_builder.add_common_attribute(LINK_SECRET).unwrap();
 
             // 9. Prover adds GVT sub proof request
             proof_builder
@@ -1732,9 +1728,7 @@ mod cl_tests {
             // 12. Verifier verifies proof for GVT and XYZ sub proof requests
             let mut proof_verifier = Verifier::new_proof_verifier().unwrap();
             // Verifier expects link secret (named `master_secret` here) to be same in both credentials
-            proof_verifier
-                .add_common_attribute("master_secret")
-                .unwrap();
+            proof_verifier.add_common_attribute(LINK_SECRET).unwrap();
             // Verifier expects attribute `name` to be same in both credentials
             proof_verifier.add_common_attribute("name").unwrap();
 

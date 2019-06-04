@@ -213,6 +213,9 @@ mod tests {
     use ffi::cl::mocks::*;
     use std::ptr;
 
+    // Master secret is now called link secret.
+    pub static LINK_SECRET: &'static str = "master_secret";
+
     #[test]
     fn ursa_cl_verifier_new_proof_verifier_works() {
         let (credential_pub_key, credential_priv_key, credential_key_correctness_proof) =
@@ -350,7 +353,7 @@ mod tests {
 
         let proof_verifier = _proof_verifier();
 
-        let common_attr_name = string_to_cstring(String::from("master_secret"));
+        let common_attr_name = string_to_cstring(String::from(LINK_SECRET));
         let err_code =
             ursa_cl_proof_verifier_add_common_attribute(proof_verifier, common_attr_name.as_ptr());
         assert_eq!(err_code, ErrorCode::Success);
