@@ -2,7 +2,7 @@ mod constants;
 #[macro_use]
 mod datastructures;
 #[macro_use]
-mod helpers;
+pub mod helpers;
 mod hash;
 pub mod issuer;
 pub mod prover;
@@ -890,7 +890,7 @@ pub enum PredicateType {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Proof {
     proofs: Vec<SubProof>,
-    aggregated_proof: AggregatedProof,
+    pub aggregated_proof: AggregatedProof,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -902,7 +902,7 @@ pub struct SubProof {
 #[derive(Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct AggregatedProof {
     c_hash: BigNumber,
-    c_list: Vec<Vec<u8>>,
+    pub c_list: Vec<Vec<u8>>,
 }
 
 #[derive(Debug, PartialEq, Eq, Deserialize, Serialize)]

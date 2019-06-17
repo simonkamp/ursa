@@ -1,5 +1,6 @@
 use bn::{BigNumber, BigNumberContext};
 use errors::prelude::*;
+use pair::{PointG1, GroupOrderElement};
 
 /// Generate a pedersen commitment to a given number
 ///
@@ -28,3 +29,13 @@ pub fn get_pedersen_commitment(
     )?;
     Ok(commitment)
 }
+
+pub fn get_pedersen_commitment_ec(
+    g: &PointG1,
+    m: &GroupOrderElement,
+    h: &PointG1,
+    r: &GroupOrderElement) -> UrsaCryptoResult<PointG1> {
+        let g_m = g.mul(m)?;
+        let h_r = h.mul(r)?;
+        g_m.add(&h_r)
+    }

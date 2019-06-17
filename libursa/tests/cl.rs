@@ -24,6 +24,9 @@ mod cl_tests {
         use super::*;
         use ursa::cl::NonCredentialSchemaBuilder;
         use ursa::errors::prelude::*;
+        use ursa::cl::verifier::ProofVerifier;
+        use ursa::utils::commitment::get_pedersen_commitment_ec;
+        use ursa::cl::helpers::{compute_challenge, field_element_to_bignum};
 
         #[test]
         fn anoncreds_demo() {
@@ -5239,6 +5242,145 @@ mod cl_tests {
                 UrsaCryptoErrorKind::InvalidStructure,
                 res.unwrap_err().kind()
             );
+        }
+
+        #[test]
+        fn anoncreds_works_for_repudiable_proof() {
+            // 2 credentials have attribute with same name and same value and the proof proves that values are same.
+            HLCryptoDefaultLogger::init(None).ok();
+
+            // 1. Prover creates master secret
+            let master_secret = Prover::new_master_secret().unwrap();
+
+            let gvt_credential_values = helpers::gvt_credential_values(&master_secret);
+
+            // 2. Issuer creates and signs GVT credential for Prover
+            let gvt_credential_schema = helpers::gvt_credential_schema();
+            let non_credential_schema = helpers::non_credential_schema();
+            let (
+                gvt_credential_pub_key,
+                gvt_credential_priv_key,
+                gvt_credential_key_correctness_proof,
+            ) = Issuer::new_credential_def(&gvt_credential_schema, &non_credential_schema, false)
+                .unwrap();
+
+            let gvt_credential_nonce = new_nonce().unwrap();
+
+            let (
+                gvt_blinded_credential_secrets,
+                gvt_credential_secrets_blinding_factors,
+                gvt_blinded_credential_secrets_correctness_proof,
+            ) = Prover::blind_credential_secrets(
+                &gvt_credential_pub_key,
+                &gvt_credential_key_correctness_proof,
+                &gvt_credential_values,
+                &gvt_credential_nonce,
+            )
+                .unwrap();
+
+            let gvt_credential_issuance_nonce = new_nonce().unwrap();
+
+            let (mut gvt_credential_signature, gvt_signature_correctness_proof) =
+                Issuer::sign_credential(
+                    PROVER_ID,
+                    &gvt_blinded_credential_secrets,
+                    &gvt_blinded_credential_secrets_correctness_proof,
+                    &gvt_credential_nonce,
+                    &gvt_credential_issuance_nonce,
+                    &gvt_credential_values,
+                    &gvt_credential_pub_key,
+                    &gvt_credential_priv_key,
+                )
+                    .unwrap();
+
+            // 3. Prover processes GVT credential
+            Prover::process_credential_signature(
+                &mut gvt_credential_signature,
+                &gvt_credential_values,
+                &gvt_signature_correctness_proof,
+                &gvt_credential_secrets_blinding_factors,
+                &gvt_credential_pub_key,
+                &gvt_credential_issuance_nonce,
+                None,
+                None,
+                None,
+            )
+                .unwrap();
+
+            // The verifier commits to a random x as K=h^x. The prover will be told h and K but not x.
+            let (_, h, K) = Verifier::commit_to_random_x().unwrap();
+
+            // 6. Verifier creates nonce
+            let nonce = new_nonce().unwrap();
+
+            // 7. Verifier creates proof request for GVT
+            let gvt_sub_proof_request = helpers::gvt_sub_proof_request_1();
+
+            // 8. Prover creates proof builder
+            let mut proof_builder = Prover::new_proof_builder().unwrap();
+            proof_builder.add_common_attribute(LINK_SECRET).unwrap();
+
+            // Next step can be done after adding all sub-proof requests too but before creating the challenge.
+            let (c1, s_K) = proof_builder.add_commitment_for_repudiation(&K, &h).unwrap();
+
+            // 9. Prover adds GVT sub proof request
+            proof_builder
+                .add_sub_proof_request(
+                    &gvt_sub_proof_request,
+                    &gvt_credential_schema,
+                    &non_credential_schema,
+                    &gvt_credential_signature,
+                    &gvt_credential_values,
+                    &gvt_credential_pub_key,
+                    None,
+                    None,
+                )
+                .unwrap();
+
+            // 11. Prover gets proof which contains sub proofs for GVT and XYZ sub proof requests
+            //let proof = proof_builder.finalize(&nonce).unwrap();
+            let c2 = proof_builder.compute_challenge_for_repudiation(&nonce, &c1).unwrap();
+
+            let proof = proof_builder.compute_proof_from_challenge(c2.try_clone().unwrap()).unwrap();
+
+            // 12. Verifier verifies proof for GVT and PQR sub proof requests
+            let mut proof_verifier = Verifier::new_proof_verifier().unwrap();
+            // Verifier expects link secret (named `master_secret` here) to be same in both credentials
+            proof_verifier.add_common_attribute(LINK_SECRET).unwrap();
+
+            proof_verifier
+                .add_sub_proof_request(
+                    &gvt_sub_proof_request,
+                    &gvt_credential_schema,
+                    &non_credential_schema,
+                    &gvt_credential_pub_key,
+                    None,
+                    None,
+                )
+                .unwrap();
+
+            //ProofVerifier::_check_verify_params_consistency(&proof_verifier.credentials, &proof).unwrap();
+            // The verifier will communicate `c1`, `c2`, `s_K` as part of proof.
+            let t_K = get_pedersen_commitment_ec(&K, &c1, &h, &s_K).unwrap();
+            let mut tau_list: Vec<Vec<u8>> = Vec::new();
+
+            // Since the commitment for K was added first, `t_K` is added before any other `tau` values
+            tau_list.extend_from_slice(&vec![t_K.to_bytes().unwrap()]);
+
+            tau_list.extend_from_slice(&proof_verifier.reconstruct_commitments(&proof).unwrap());
+
+            let challenge = compute_challenge(tau_list.as_slice(), proof.aggregated_proof.c_list.as_slice(),
+                                              &nonce).unwrap();
+            let mut expected_challenge = field_element_to_bignum(&c1).unwrap();
+            expected_challenge = expected_challenge.add(&c2).unwrap();
+            assert!(expected_challenge == challenge);
+        }
+
+        #[test]
+        fn anoncreds_verifier_creates_fake_proof_with_repudiable_proof() {
+            // The verifier commits to a random x as K=h^x. The prover will be told h and K but not x.
+            let (x, h, K) = Verifier::commit_to_random_x().unwrap();
+            // TODO: Make verifier create false proof
         }
     }
 

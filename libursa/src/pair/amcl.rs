@@ -358,6 +358,7 @@ impl<'a> Deserialize<'a> for PointG2 {
     }
 }
 
+/// An element of the field less than the order of the group
 #[derive(Copy, Clone, PartialEq)]
 pub struct GroupOrderElement {
     bn: BIG,

@@ -9,6 +9,10 @@ use utils::commitment::get_pedersen_commitment;
 
 use std::collections::{HashMap, HashSet};
 
+// TODO: There a several places where modulo N or modulo p'.q' is performed. For optimization, Barrett reduction
+// should be used. The precomputed values for the modulus should be computed once and stored. For pre-computation
+// regarding p'q', store securely like secret key.
+
 /// Trust source that provides credentials to prover.
 pub struct Issuer {}
 
@@ -690,6 +694,7 @@ impl Issuer {
         let s = random_qr(&n)?;
         let xz = gen_x(&p, &q)?;
 
+        // Generate random numbers in range [2, p*q) for schema attributes + non schema attributes
         let mut xr = HashMap::new();
         for non_schema_element in &non_credential_schema.attrs {
             xr.insert(non_schema_element.to_string(), gen_x(&p, &q)?);

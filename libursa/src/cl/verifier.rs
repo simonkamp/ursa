@@ -1,6 +1,5 @@
 use bn::BigNumber;
-use cl::constants::{ITERATION, LARGE_E_START_VALUE};
-use cl::hash::get_hash_as_int;
+use cl::constants::{ITERATION, LARGE_E_START_VALUE, LARGE_PRIME};
 use cl::helpers::*;
 use cl::*;
 use errors::prelude::*;
@@ -8,6 +7,8 @@ use errors::prelude::*;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, HashMap};
 use std::iter::FromIterator;
+use pair::{PointG1, GroupOrderElement};
+use utils::commitment::get_pedersen_commitment_ec;
 
 /// Party that wants to check that prover has some credentials provided by issuer.
 pub struct Verifier {}
@@ -48,6 +49,31 @@ impl Verifier {
             credentials: Vec::new(),
             common_attributes: HashMap::new(),
         })
+    }
+
+    // Generates a random x and h and returns (x, h, h^x)
+    /*pub fn commit_to_random_x() -> UrsaCryptoResult<(BigNumber, BigNumber, BigNumber)> {
+        let mut ctx = BigNumber::new_context()?;
+
+        let p_safe = generate_safe_prime(LARGE_PRIME)?;
+        let q_safe = generate_safe_prime(LARGE_PRIME)?;
+
+        let p = p_safe.rshift1()?;
+        let q = q_safe.rshift1()?;
+
+        let n = p_safe.mul(&q_safe, Some(&mut ctx))?;
+        let s = random_qr(&n)?;
+        let r = gen_x(&p, &q)?;
+        let h = s.mod_exp(&r, &n, Some(&mut ctx))?;
+        let x = gen_x(&p, &q)?;
+        let h_x = h.mod_exp(&x, &n, Some(&mut ctx))?;
+        Ok((x, h, h_x))
+    }*/
+
+    pub fn commit_to_random_x() -> UrsaCryptoResult<(GroupOrderElement, PointG1, PointG1)> {
+        let h = PointG1::new()?;
+        let x = GroupOrderElement::new()?;
+        Ok((x, h, h.mul(&x)?))
     }
 }
 
@@ -224,6 +250,25 @@ impl ProofVerifier {
 
         ProofVerifier::_check_verify_params_consistency(&self.credentials, proof)?;
 
+        let tau_list = self.reconstruct_commitments(proof)?;
+
+        let challenge = compute_challenge(tau_list.as_slice(), proof.aggregated_proof.c_list.as_slice(), nonce)?;
+
+        info!(target: "anoncreds_service", "Verifier verify proof -> done");
+
+        // Compare with prover's created challenge
+        let valid = challenge == proof.aggregated_proof.c_hash;
+
+        trace!("ProofVerifier::verify: <<< valid: {:?}", valid);
+
+        Ok(valid)
+    }
+
+    /// Reconstruct prover's commitment to eventually reconstruct the challenge hash created by prover
+    pub fn reconstruct_commitments(&mut self, proof: &Proof) -> UrsaCryptoResult<Vec<Vec<u8>>> {
+        trace!(
+            "ProofVerifier::reconstruct_commitments: >>> proof: {:?}", proof);
+
         let mut tau_list: Vec<Vec<u8>> = Vec::new();
 
         for idx in 0..proof.proofs.len() {
@@ -248,7 +293,7 @@ impl ProofVerifier {
                         &proof.aggregated_proof.c_hash,
                         &non_revocation_proof,
                     )?
-                    .as_slice()?,
+                        .as_slice()?,
                 );
             };
 
@@ -302,21 +347,9 @@ impl ProofVerifier {
                 &credential.sub_proof_request,
             )?)?;
         }
+        trace!("ProofVerifier::reconstruct_commitments: <<< tau_list: {:?}", tau_list);
 
-        let mut values: Vec<Vec<u8>> = Vec::new();
-        values.extend_from_slice(&tau_list);
-        values.extend_from_slice(&proof.aggregated_proof.c_list);
-        values.push(nonce.to_bytes()?);
-
-        let c_hver = get_hash_as_int(&values)?;
-
-        info!(target: "anoncreds_service", "Verifier verify proof -> done");
-
-        let valid = c_hver == proof.aggregated_proof.c_hash;
-
-        trace!("ProofVerifier::verify: <<< valid: {:?}", valid);
-
-        Ok(valid)
+        Ok(tau_list)
     }
 
     fn _check_add_sub_proof_request_params_consistency(
@@ -487,6 +520,7 @@ impl ProofVerifier {
                 )
             })?;
 
+            // rar = (cur_r^encoded_value) * rar
             rar = cur_r
                 .mod_exp(encoded_value, &p_pub_key.n, Some(&mut ctx))?
                 .mod_mul(&rar, &p_pub_key.n, Some(&mut ctx))?;
@@ -590,7 +624,7 @@ impl ProofVerifier {
         trace!("ProofVerifier::_verify_non_revocation_proof: >>> r_pub_key: {:?}, rev_reg: {:?}, rev_key_pub: {:?}, c_hash: {:?}",
                r_pub_key, rev_reg, rev_key_pub, c_hash);
 
-        let ch_num_z = bignum_to_group_element(&c_hash)?;
+        let ch_num_z = bignum_to_field_element(&c_hash)?;
 
         let t_hat_expected_values =
             create_tau_list_expected_values(r_pub_key, rev_reg, rev_key_pub, &proof.c_list)?;

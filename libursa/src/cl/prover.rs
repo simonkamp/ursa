@@ -5,11 +5,16 @@ use cl::hash::get_hash_as_int;
 use cl::*;
 use errors::prelude::*;
 use pair::*;
-use utils::commitment::get_pedersen_commitment;
+use utils::commitment::{get_pedersen_commitment, get_pedersen_commitment_ec};
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use std::iter::FromIterator;
+use errors::UrsaCryptoResult;
+
+// TODO: There a several places where modulo N is performed. For optimization, Barrett reduction
+// should be used. The precomputed values for the modulus should be computed once and stored.
+// The prover will have multiple such N, one for each issuer public key.
 
 /// Credentials owner that can proof and partially disclose the credentials to verifier.
 pub struct Prover {}
@@ -967,6 +972,7 @@ impl ProofBuilder {
         )?;
 
         let mut non_revoc_init_proof = None;
+        // Blinding factor for revocation index
         let mut m2_tilde: Option<BigNumber> = None;
 
         if let (&Some(ref r_cred), &Some(ref r_reg), &Some(ref r_pub_key), &Some(ref witness)) = (
@@ -980,7 +986,7 @@ impl ProofBuilder {
 
             self.c_list.extend_from_slice(&proof.as_c_list()?);
             self.tau_list.extend_from_slice(&proof.as_tau_list()?);
-            m2_tilde = Some(group_element_to_bignum(&proof.tau_list_params.m2)?);
+            m2_tilde = Some(field_element_to_bignum(&proof.tau_list_params.m2)?);
             non_revoc_init_proof = Some(proof);
         }
 
@@ -1015,7 +1021,7 @@ impl ProofBuilder {
         Ok(())
     }
 
-    /// Finalize proof.
+    /// Finalize proof. Computes the challenge and creates response using the challenge. Last step of Sigma protocol.
     ///
     /// # Arguments
     /// * `proof_builder` - Proof builder.
@@ -1092,13 +1098,17 @@ impl ProofBuilder {
     pub fn finalize(&self, nonce: &Nonce) -> UrsaCryptoResult<Proof> {
         trace!("ProofBuilder::finalize: >>> nonce: {:?}", nonce);
 
-        let mut values: Vec<Vec<u8>> = Vec::new();
-        values.extend_from_slice(&self.tau_list);
-        values.extend_from_slice(&self.c_list);
-        values.push(nonce.to_bytes()?);
+        let challenge = self.compute_challenge(nonce)?;
 
-        // In the anoncreds whitepaper, `challenge` is denoted by `c_h`
-        let challenge = get_hash_as_int(&values)?;
+        let proof = self.compute_proof_from_challenge(challenge)?;
+
+        trace!("ProofBuilder::finalize: <<< proof: {:?}", proof);
+
+        Ok(proof)
+    }
+
+    pub fn compute_proof_from_challenge(&self, challenge: BigNumber) -> UrsaCryptoResult<Proof> {
+        trace!("ProofBuilder::compute_response: >>> challenge: {:?}", challenge);
 
         let mut proofs: Vec<SubProof> = Vec::new();
 
@@ -1137,9 +1147,29 @@ impl ProofBuilder {
             aggregated_proof,
         };
 
-        trace!("ProofBuilder::finalize: <<< proof: {:?}", proof);
+        trace!("ProofBuilder::compute_response: <<< proof: {:?}", proof);
 
         Ok(proof)
+
+    }
+
+    pub fn add_commitment_for_repudiation(&mut self, K: &PointG1, h: &PointG1) -> UrsaCryptoResult<(GroupOrderElement, GroupOrderElement)> {
+        let w = GroupOrderElement::new()?;
+        let v = GroupOrderElement::new()?;
+        let t = get_pedersen_commitment_ec(K, &w, h, &v)?;
+        self.tau_list.extend_from_slice(&vec![t.to_bytes()?]);
+        Ok((w, v))
+    }
+
+    pub fn compute_challenge_for_repudiation(&self, nonce: &Nonce, c1: &GroupOrderElement) -> UrsaCryptoResult<BigNumber> {
+        let combined_challenge = self.compute_challenge(nonce)?;
+        let c_H = bignum_to_field_element(&combined_challenge)?;
+        let c2 = c_H.sub_mod(&c1)?;
+        field_element_to_bignum(&c2)
+    }
+
+    pub fn compute_challenge(&self, nonce: &Nonce) -> UrsaCryptoResult<BigNumber> {
+        compute_challenge(&self.tau_list, &self.c_list, nonce)
     }
 
     fn _check_add_sub_proof_request_params_consistency(
@@ -1340,6 +1370,7 @@ impl ProofBuilder {
             .cloned()
             .collect::<HashSet<String>>();
 
+        // Blinding factors for unrevealed attributes
         let mut m_tilde = clone_bignum_map(&common_attributes)?;
         get_mtilde(&unrevealed_attrs, &mut m_tilde)?;
 
@@ -1439,7 +1470,7 @@ impl ProofBuilder {
             })?;
 
             let cur_r = bn_rand(LARGE_VPRIME)?;
-            let cut_t = get_pedersen_commitment(
+            let cur_t = get_pedersen_commitment(
                 &p_pub_key.z,
                 &cur_u,
                 &p_pub_key.s,
@@ -1449,8 +1480,8 @@ impl ProofBuilder {
             )?;
 
             r.insert(i.to_string(), cur_r);
-            t.insert(i.to_string(), cut_t.try_clone()?);
-            c_list.push(cut_t)
+            t.insert(i.to_string(), cur_t.try_clone()?);
+            c_list.push(cur_t)
         }
 
         let r_delta = bn_rand(LARGE_VPRIME)?;
@@ -1539,13 +1570,14 @@ impl ProofBuilder {
 
         let mut ctx = BigNumber::new_context()?;
 
-        let e = challenge
-            .mul(&init_proof.e_prime, Some(&mut ctx))?
-            .add(&init_proof.e_tilde)?;
-
-        let v = challenge
-            .mul(&init_proof.v_prime, Some(&mut ctx))?
-            .add(&init_proof.v_tilde)?;
+        // e = challenge*e_prime + e_tilde
+        let e = compute_response_for_single_value(&init_proof.e_prime,
+                                                  &init_proof.e_tilde, &challenge,
+                                                  Some(&mut ctx))?;
+        // v = challenge*v_prime + v_tilde
+        let v = compute_response_for_single_value(&init_proof.v_prime,
+                                                  &init_proof.v_tilde, &challenge,
+                                                  Some(&mut ctx))?;
 
         let mut m_hat = HashMap::new();
 
@@ -1573,17 +1605,17 @@ impl ProofBuilder {
                 )
             })?;
 
-            // val = cur_mtilde + (cur_val * challenge)
-            let val = challenge
-                .mul(&cur_val.value(), Some(&mut ctx))?
-                .add(&cur_mtilde)?;
+            // val = (cur_val * challenge) + cur_mtilde
+            let val = compute_response_for_single_value(&cur_val.value(),
+                                                        &cur_mtilde, &challenge,
+                                                        Some(&mut ctx))?;
 
             m_hat.insert(k.clone(), val);
         }
 
-        let m2 = challenge
-            .mul(&init_proof.m2, Some(&mut ctx))?
-            .add(&init_proof.m2_tilde)?;
+        let m2 = compute_response_for_single_value(&init_proof.m2,
+                                                           &init_proof.m2_tilde, &challenge,
+                                                           Some(&mut ctx))?;
 
         let mut revealed_attrs_with_values = BTreeMap::new();
 
@@ -1622,13 +1654,13 @@ impl ProofBuilder {
     }
 
     fn _finalize_ne_proof(
-        c_h: &BigNumber,
+        challenge: &BigNumber,
         init_proof: &PrimaryPredicateInequalityInitProof,
         eq_proof: &PrimaryEqualProof,
     ) -> UrsaCryptoResult<PrimaryPredicateInequalityProof> {
         trace!(
-            "ProofBuilder::_finalize_ne_proof: >>> c_h: {:?}, init_proof: {:?}, eq_proof: {:?}",
-            c_h,
+            "ProofBuilder::_finalize_ne_proof: >>> challenge: {:?}, init_proof: {:?}, eq_proof: {:?}",
+            challenge,
             init_proof,
             eq_proof
         );
@@ -1644,8 +1676,12 @@ impl ProofBuilder {
             let cur_rtilde = &init_proof.r_tilde[&i.to_string()];
             let cur_r = &init_proof.r[&i.to_string()];
 
-            let new_u: BigNumber = c_h.mul(&cur_u, Some(&mut ctx))?.add(&cur_utilde)?;
-            let new_r: BigNumber = c_h.mul(&cur_r, Some(&mut ctx))?.add(&cur_rtilde)?;
+            let new_u = compute_response_for_single_value(&cur_u,
+                                                       &cur_utilde, &challenge,
+                                                       Some(&mut ctx))?;
+            let new_r = compute_response_for_single_value(&cur_r,
+                                                          &cur_rtilde, &challenge,
+                                                          Some(&mut ctx))?;
 
             u.insert(i.to_string(), new_u);
             r.insert(i.to_string(), new_r);
@@ -1654,17 +1690,18 @@ impl ProofBuilder {
 
             let cur_rtilde_delta = &init_proof.r_tilde["DELTA"];
 
-            let new_delta = c_h
+            let new_delta = challenge
                 .mul(&init_proof.r["DELTA"], Some(&mut ctx))?
                 .add(&cur_rtilde_delta)?;
 
             r.insert("DELTA".to_string(), new_delta);
         }
 
-        let alpha = init_proof.r["DELTA"]
-            .sub(&urproduct)?
-            .mul(&c_h, Some(&mut ctx))?
-            .add(&init_proof.alpha_tilde)?;
+        let mut alpha = init_proof.r["DELTA"]
+            .sub(&urproduct)?;
+        alpha = compute_response_for_single_value(&alpha,
+                                                  &init_proof.alpha_tilde, &challenge,
+                                                  Some(&mut ctx))?;
 
         let primary_predicate_ne_proof = PrimaryPredicateInequalityProof {
             u,
@@ -1866,7 +1903,7 @@ impl ProofBuilder {
             c_h
         );
 
-        let ch_num_z = bignum_to_group_element(&c_h)?;
+        let ch_num_z = bignum_to_field_element(&c_h)?;
         let mut x_list: Vec<GroupOrderElement> = Vec::new();
 
         for (x, y) in init_proof
@@ -1889,6 +1926,16 @@ impl ProofBuilder {
         );
 
         Ok(non_revoc_proof)
+    }
+
+    #[cfg(test)]
+    fn get_c_list(&self) -> &Vec<Vec<u8>> {
+        &self.c_list
+    }
+
+    #[cfg(test)]
+    fn get_tau_list(&self) -> &Vec<Vec<u8>> {
+        &self.tau_list
     }
 }
 
@@ -2074,7 +2121,7 @@ mod tests {
         let credential = mocks::primary_credential();
         let sub_proof_request = mocks::sub_proof_request();
         let m2_tilde =
-            group_element_to_bignum(&mocks::init_non_revocation_proof().tau_list_params.m2)
+            field_element_to_bignum(&mocks::init_non_revocation_proof().tau_list_params.m2)
                 .unwrap();
 
         let init_eq_proof = ProofBuilder::_init_eq_proof(
@@ -2123,7 +2170,7 @@ mod tests {
         let sub_proof_request = mocks::sub_proof_request();
         let common_attributes = mocks::proof_common_attributes();
         let m2_tilde =
-            group_element_to_bignum(&mocks::init_non_revocation_proof().tau_list_params.m2)
+            field_element_to_bignum(&mocks::init_non_revocation_proof().tau_list_params.m2)
                 .unwrap();
 
         let init_proof = ProofBuilder::_init_primary_proof(

@@ -1,5 +1,5 @@
 use super::constants::*;
-use bn::{BigNumber, BIGNUMBER_1};
+use bn::{BigNumber, BIGNUMBER_1, BigNumberContext};
 use cl::*;
 use errors::prelude::*;
 use pair::GroupOrderElement;
@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 #[cfg(test)]
 use std::cell::RefCell;
+use cl::hash::get_hash_as_int;
 
 #[derive(Debug, Copy, Clone)]
 #[allow(dead_code)] //FIXME
@@ -223,6 +224,7 @@ pub fn gen_x(p: &BigNumber, q: &BigNumber) -> UrsaCryptoResult<BigNumber> {
     _gen_x(p, q)
 }
 
+/// Generate a random integer in range [2, p*q)
 pub fn _gen_x(p: &BigNumber, q: &BigNumber) -> UrsaCryptoResult<BigNumber> {
     trace!("Helpers::gen_x: >>> p: {:?}, q: {:?}", p, q);
 
@@ -312,6 +314,7 @@ pub fn get_mtilde(
     Ok(())
 }
 
+/// Commit to the randomness chosen for unrevealed attributes. First step of Sigma protocol.
 pub fn calc_teq(
     p_pub_key: &CredentialPrimaryPublicKey,
     a_prime: &BigNumber,
@@ -363,6 +366,7 @@ pub fn calc_teq(
     Ok(result)
 }
 
+/// Commit to the randomness chosen for attribute part of a predicate. First step of Sigma protocol.
 pub fn calc_tne(
     p_pub_key: &CredentialPrimaryPublicKey,
     u: &HashMap<String, BigNumber>,
@@ -536,11 +540,11 @@ pub fn four_squares(delta: i32) -> UrsaCryptoResult<HashMap<String, BigNumber>> 
     Ok(res)
 }
 
-pub fn group_element_to_bignum(el: &GroupOrderElement) -> UrsaCryptoResult<BigNumber> {
+pub fn field_element_to_bignum(el: &GroupOrderElement) -> UrsaCryptoResult<BigNumber> {
     Ok(BigNumber::from_bytes(&el.to_bytes()?)?)
 }
 
-pub fn bignum_to_group_element(num: &BigNumber) -> UrsaCryptoResult<GroupOrderElement> {
+pub fn bignum_to_field_element(num: &BigNumber) -> UrsaCryptoResult<GroupOrderElement> {
     Ok(GroupOrderElement::from_bytes(&num.to_bytes()?)?)
 }
 
@@ -662,6 +666,33 @@ pub fn create_tau_list_values(
     );
 
     Ok(non_revoc_proof_tau_list)
+}
+
+/// Compute challenge by hashing given inputs. Used to simulate challenge of sigma protocol
+pub fn compute_challenge(tau_list: &[Vec<u8>], c_list: &[Vec<u8>], nonce: &Nonce) -> UrsaCryptoResult<BigNumber> {
+    trace!("Helpers::compute_challenge: >>> nonce: {:?}", nonce);
+
+    let mut values: Vec<Vec<u8>> = Vec::new();
+    values.extend_from_slice(tau_list);
+    values.extend_from_slice(c_list);
+    values.push(nonce.to_bytes()?);
+
+    // In the anoncreds whitepaper, `challenge` is denoted by `c_h`
+    let challenge = get_hash_as_int(&values)?;
+
+    trace!("Helpers::compute_challenge: <<< challenge: {:?}", challenge);
+
+    Ok(challenge)
+}
+
+/// Compute response for the given value for 3rd step of sigma protocol.
+/// Return value*challenge + blinding
+pub fn compute_response_for_single_value(value: &BigNumber, blinding: &BigNumber,
+                                         challenge: &BigNumber, ctx: Option<&mut BigNumberContext>)
+    -> UrsaCryptoResult<BigNumber> {
+    challenge
+        .mul(value, ctx)?
+        .add(blinding)
 }
 
 #[cfg(test)]
