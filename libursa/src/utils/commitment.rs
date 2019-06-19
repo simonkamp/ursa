@@ -30,6 +30,7 @@ pub fn get_pedersen_commitment(
     Ok(commitment)
 }
 
+// g^m.h^r
 pub fn get_pedersen_commitment_ec(
     g: &PointG1,
     m: &GroupOrderElement,
@@ -39,3 +40,14 @@ pub fn get_pedersen_commitment_ec(
         let h_r = h.mul(r)?;
         g_m.add(&h_r)
     }
+
+pub fn commit_to_random() -> UrsaCryptoResult<(GroupOrderElement, PointG1, PointG1)> {
+    let h = PointG1::new()?;
+    let x = GroupOrderElement::new()?;
+    Ok((x, h, h.mul(&x)?))
+}
+
+pub fn commit_to_random_with_generator(gen: &PointG1) -> UrsaCryptoResult<(GroupOrderElement, PointG1)> {
+    let x = GroupOrderElement::new()?;
+    Ok((x, gen.mul(&x)?))
+}

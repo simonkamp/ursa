@@ -555,6 +555,19 @@ impl BigNumber {
 
         Ok(sha256.finish()?.to_vec())
     }
+
+    // XOR 2 BigNumbers. Converts to bytes and then XORs each byte
+    pub fn xor_bn(a: &BigNumber, b: &BigNumber) -> UrsaCryptoResult<BigNumber> {
+        let a_bytes = a.to_bytes()?;
+        let b_bytes = b.to_bytes()?;
+        assert_eq!(a_bytes.len(), b_bytes.len());
+        let mut res = vec![];
+        for i in 0..a_bytes.len() {
+            let c = a_bytes[i] ^ b_bytes[i];
+            res.push(c);
+        }
+        BigNumber::from_bytes(&res)
+    }
 }
 
 impl Ord for BigNumber {
@@ -847,5 +860,21 @@ mod tests {
 
         assert!(bn.is_ok());
         assert_eq!("1", bn.unwrap().field.to_dec().unwrap());
+    }
+
+    #[test]
+    fn test_xor_bn() {
+        let num_test_cases = 10;
+        for _ in 0..num_test_cases {
+            let a = BigNumber::new().unwrap();
+            let b = BigNumber::new().unwrap();
+            let c = BigNumber::xor_bn(&a, &b).unwrap();
+            let d = BigNumber::xor_bn(&c, &a).unwrap();
+            let e = BigNumber::xor_bn(&c, &b).unwrap();
+            let f = BigNumber::xor_bn(&b, &a).unwrap();
+            assert_eq!(c, f);
+            assert_eq!(d, b);
+            assert_eq!(e, a);
+        }
     }
 }

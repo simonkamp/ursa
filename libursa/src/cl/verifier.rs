@@ -69,12 +69,6 @@ impl Verifier {
         let h_x = h.mod_exp(&x, &n, Some(&mut ctx))?;
         Ok((x, h, h_x))
     }*/
-
-    pub fn commit_to_random_x() -> UrsaCryptoResult<(GroupOrderElement, PointG1, PointG1)> {
-        let h = PointG1::new()?;
-        let x = GroupOrderElement::new()?;
-        Ok((x, h, h.mul(&x)?))
-    }
 }
 
 #[derive(Debug)]
@@ -261,6 +255,31 @@ impl ProofVerifier {
 
         trace!("ProofVerifier::verify: <<< valid: {:?}", valid);
 
+        Ok(valid)
+    }
+
+    pub fn verify_repudiable(&mut self, proof: &Proof, nonce: &Nonce,
+                             K: &PointG1, c1: &GroupOrderElement,
+                             h: &PointG1, s_K: &GroupOrderElement,
+                             c2: &BigNumber) -> UrsaCryptoResult<bool> {
+        // The verifier will communicate `c1`, `c2`, `s_K` as part of proof.
+        let c1_neg = c1.mod_neg().unwrap();
+        let t_K = get_pedersen_commitment_ec(&K, &c1_neg, &h, &s_K)?;
+        //println!("verifier's t_K={:?}", &t_K.to_bytes().unwrap());
+        let mut tau_list: Vec<Vec<u8>> = Vec::new();
+
+        // Since the commitment for K was added first, `t_K` is added before any other `tau` values
+        tau_list.extend_from_slice(&vec![t_K.to_bytes()?]);
+
+        let T_bytes = self.reconstruct_commitments(&proof)?;
+        tau_list.extend_from_slice(&T_bytes);
+
+        let challenge = compute_challenge(tau_list.as_slice(), proof.aggregated_proof.c_list.as_slice(),
+                                          &nonce)?;
+        println!("verifier's challenge={:?}", &challenge.to_bytes().unwrap());
+        let expected_challenge = BigNumber::xor_bn(&field_element_to_bignum(&c1)?, &c2)?;
+        println!("verifier's expected_challenge={:?}", &expected_challenge.to_bytes().unwrap());
+        let valid = expected_challenge == challenge;
         Ok(valid)
     }
 

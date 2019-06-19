@@ -1,4 +1,4 @@
-mod constants;
+pub mod constants;
 #[macro_use]
 mod datastructures;
 #[macro_use]
@@ -302,11 +302,11 @@ pub struct CredentialPrivateKey {
 /// Issuer's "Public Key" is used to verify the Issuer's signature over the Credential's attributes' values (primary credential).
 #[derive(Debug, PartialEq, Serialize)]
 pub struct CredentialPrimaryPublicKey {
-    n: BigNumber,
+    pub n: BigNumber,
     s: BigNumber,
     r: HashMap<String /* attr_name */, BigNumber>,
     rctxt: BigNumber,
-    z: BigNumber,
+    pub z: BigNumber,
 }
 
 impl CredentialPrimaryPublicKey {
@@ -889,37 +889,37 @@ pub enum PredicateType {
 /// 3) Credential contains attributes with valid predicates that verifier wants the prover to satisfy.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Proof {
-    proofs: Vec<SubProof>,
+    pub proofs: Vec<SubProof>,
     pub aggregated_proof: AggregatedProof,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SubProof {
-    primary_proof: PrimaryProof,
-    non_revoc_proof: Option<NonRevocProof>,
+    pub primary_proof: PrimaryProof,
+    pub non_revoc_proof: Option<NonRevocProof>,
 }
 
 #[derive(Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct AggregatedProof {
-    c_hash: BigNumber,
+    pub c_hash: BigNumber,
     pub c_list: Vec<Vec<u8>>,
 }
 
 #[derive(Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct PrimaryProof {
-    eq_proof: PrimaryEqualProof,
+    pub eq_proof: PrimaryEqualProof,
     #[serde(rename = "ge_proofs")]
-    ne_proofs: Vec<PrimaryPredicateInequalityProof>,
+    pub ne_proofs: Vec<PrimaryPredicateInequalityProof>,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
 pub struct PrimaryEqualProof {
-    revealed_attrs: BTreeMap<String /* attr_name of revealed */, BigNumber>,
-    a_prime: BigNumber,
-    e: BigNumber,
-    v: BigNumber,
-    m: HashMap<String /* attr_name of all except revealed */, BigNumber>,
-    m2: BigNumber,
+    pub revealed_attrs: BTreeMap<String /* attr_name of revealed */, BigNumber>,
+    pub a_prime: BigNumber,
+    pub e: BigNumber,
+    pub v: BigNumber,
+    pub m: HashMap<String /* attr_name of all except revealed */, BigNumber>,
+    pub m2: BigNumber,
 }
 
 impl<'a> ::serde::de::Deserialize<'a> for PrimaryEqualProof {

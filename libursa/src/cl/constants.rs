@@ -1,5 +1,6 @@
 use bn::{BigNumber, BIGNUMBER_2};
 
+// `LARGE_MASTER_SECRET` denotes the size in bits of all credential attributes, not just master secret.
 pub const LARGE_MASTER_SECRET: usize = 256;
 pub const LARGE_E_START: usize = 596;
 pub const LARGE_E_END_RANGE: usize = 119;
@@ -24,14 +25,19 @@ pub const LARGE_ALPHATILDE: usize = 2787;
 
 // Constants that are used throughout the CL signatures code, so avoiding recomputation.
 lazy_static! {
+    // 2^LARGE_E_START
     pub static ref LARGE_E_START_VALUE: BigNumber = BIGNUMBER_2
         .exp(&BigNumber::from_u32(LARGE_E_START).unwrap(), None)
         .unwrap();
+
+    // 2^LARGE_E_END_RANGE + 2^LARGE_E_START
     pub static ref LARGE_E_END_RANGE_VALUE: BigNumber = BIGNUMBER_2
         .exp(&BigNumber::from_u32(LARGE_E_END_RANGE).unwrap(), None)
         .unwrap()
         .add(&LARGE_E_START_VALUE)
         .unwrap();
+
+    // 2^(LARGE_VPRIME_PRIME-1)
     pub static ref LARGE_VPRIME_PRIME_VALUE: BigNumber = BIGNUMBER_2
         .exp(&BigNumber::from_u32(LARGE_VPRIME_PRIME - 1).unwrap(), None)
         .unwrap();

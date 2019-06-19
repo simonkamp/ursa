@@ -14,6 +14,7 @@ mod cl_tests {
         new_nonce, RevocationRegistry, RevocationRegistryDelta, SimpleTailsAccessor, Witness,
     };
     use ursa::pair::PointG2;
+    use ursa::bn::BigNumber;
     use ursa::utils::logger::HLCryptoDefaultLogger;
 
     pub const PROVER_ID: &'static str = "CnEDk9HrMnmiHXEV1WFgbVCRteYnPqsJwrTdcZaNhFVW";
@@ -22,11 +23,13 @@ mod cl_tests {
 
     mod test {
         use super::*;
-        use ursa::cl::NonCredentialSchemaBuilder;
+        use ursa::cl::{NonCredentialSchemaBuilder, MasterSecret, PrimaryEqualProof,
+                       PrimaryPredicateInequalityProof, PrimaryProof, SubProof, AggregatedProof, Proof};
         use ursa::errors::prelude::*;
         use ursa::cl::verifier::ProofVerifier;
-        use ursa::utils::commitment::get_pedersen_commitment_ec;
-        use ursa::cl::helpers::{compute_challenge, field_element_to_bignum};
+        use ursa::utils::commitment::{get_pedersen_commitment_ec, commit_to_random, commit_to_random_with_generator};
+        use ursa::cl::helpers::{compute_challenge, field_element_to_bignum, bignum_to_field_element, bn_rand, calc_teq};
+        use std::collections::{HashMap, BTreeMap};
 
         #[test]
         fn anoncreds_demo() {
@@ -3703,7 +3706,7 @@ mod cl_tests {
             // 19. Issuer creates and signs new credential values
             let mut credential_values_builder = Issuer::new_credential_values_builder().unwrap();
             credential_values_builder
-                .add_value_known("master_secret", &master_secret.value().unwrap())
+                .add_value_hidden("master_secret", &master_secret.value().unwrap())
                 .unwrap();
             credential_values_builder
                 .add_dec_known("name", "1139481716457488690172217916278103335")
@@ -5245,7 +5248,7 @@ mod cl_tests {
         }
 
         #[test]
-        fn anoncreds_works_for_repudiable_proof() {
+        fn anoncreds_repudiable_proof_works() {
             // 2 credentials have attribute with same name and same value and the proof proves that values are same.
             HLCryptoDefaultLogger::init(None).ok();
 
@@ -5307,14 +5310,15 @@ mod cl_tests {
             )
                 .unwrap();
 
-            // The verifier commits to a random x as K=h^x. The prover will be told h and K but not x.
-            let (_, h, K) = Verifier::commit_to_random_x().unwrap();
+            // The verifier commits to a random x as K=h^x. (x, K) are considered the private and public keys of verifier.
+            // The prover will be told h and K but not x.
+            let (_, h, K) = commit_to_random().unwrap();
 
             // 6. Verifier creates nonce
             let nonce = new_nonce().unwrap();
 
             // 7. Verifier creates proof request for GVT
-            let gvt_sub_proof_request = helpers::gvt_sub_proof_request_1();
+            let gvt_sub_proof_request = helpers::gvt_sub_proof_request_2();
 
             // 8. Prover creates proof builder
             let mut proof_builder = Prover::new_proof_builder().unwrap();
@@ -5343,9 +5347,9 @@ mod cl_tests {
 
             let proof = proof_builder.compute_proof_from_challenge(c2.try_clone().unwrap()).unwrap();
 
-            // 12. Verifier verifies proof for GVT and PQR sub proof requests
+            // The prover will send challenges (c1, c2) with proof
+
             let mut proof_verifier = Verifier::new_proof_verifier().unwrap();
-            // Verifier expects link secret (named `master_secret` here) to be same in both credentials
             proof_verifier.add_common_attribute(LINK_SECRET).unwrap();
 
             proof_verifier
@@ -5359,28 +5363,153 @@ mod cl_tests {
                 )
                 .unwrap();
 
-            //ProofVerifier::_check_verify_params_consistency(&proof_verifier.credentials, &proof).unwrap();
-            // The verifier will communicate `c1`, `c2`, `s_K` as part of proof.
-            let t_K = get_pedersen_commitment_ec(&K, &c1, &h, &s_K).unwrap();
-            let mut tau_list: Vec<Vec<u8>> = Vec::new();
-
-            // Since the commitment for K was added first, `t_K` is added before any other `tau` values
-            tau_list.extend_from_slice(&vec![t_K.to_bytes().unwrap()]);
-
-            tau_list.extend_from_slice(&proof_verifier.reconstruct_commitments(&proof).unwrap());
-
-            let challenge = compute_challenge(tau_list.as_slice(), proof.aggregated_proof.c_list.as_slice(),
-                                              &nonce).unwrap();
-            let mut expected_challenge = field_element_to_bignum(&c1).unwrap();
-            expected_challenge = expected_challenge.add(&c2).unwrap();
-            assert!(expected_challenge == challenge);
+            assert!(
+                proof_verifier.verify_repudiable(
+                    &proof, &nonce, &K, &c1, &h, &s_K, &c2
+                ).unwrap()
+            )
         }
 
         #[test]
-        fn anoncreds_verifier_creates_fake_proof_with_repudiable_proof() {
-            // The verifier commits to a random x as K=h^x. The prover will be told h and K but not x.
-            let (x, h, K) = Verifier::commit_to_random_x().unwrap();
-            // TODO: Make verifier create false proof
+        fn anoncreds_verifier_creates_fake_credential_proof_with_repudiable_proving() {
+            // The verifier creates a repudiable proof without having a credential from issuer.
+            // The proof does not reveal anything but proves knowledge of issuer's signature.
+            // This can be extended to selective disclosure or predicates.
+
+            use ursa::cl::constants::*;
+
+            // The verifier commits to a random x as K=h^x. (x, K) are considered the private and public keys of verifier.
+            // The prover will be told h and K but not x.
+            let (x, h, K) = commit_to_random().unwrap();
+
+            // 1. Issuer creates credential schema
+            let credential_schema = helpers::gvt_credential_schema();
+            let non_credential_schema = helpers::non_credential_schema();
+
+            // 2. Issuer creates credential definition
+            let (credential_pub_key, credential_priv_key, credential_key_correctness_proof) =
+                Issuer::new_credential_def(&credential_schema, &non_credential_schema, false)
+                    .unwrap();
+
+            let nonce = new_nonce().unwrap();
+
+            let p_key = credential_pub_key.get_primary_key().unwrap();
+            let n = p_key.n.try_clone().unwrap();
+            let A_prime = n.rand_range().unwrap().modulus(&n, None).unwrap();
+            let s = bn_rand(LARGE_MASTER_SECRET).unwrap();
+            let s_prime = bn_rand(LARGE_ETILDE).unwrap();
+            let s_prime_prime = bn_rand(LARGE_VTILDE).unwrap();
+
+            // Generating 5 random values, 1 per attribute in credential. The random values are only for test.
+            // In practice, the verifier will create attribute with values he wishes.
+            let mut m: HashMap<String, _> = HashMap::new();
+            let mut q: HashMap<String, _> = HashMap::new();
+            let attr_names: HashSet<String> = ["name", "sex", "age", "height", LINK_SECRET].iter().map(|s| String::from(*s)).collect();
+            for name in &attr_names {
+                // `LARGE_MASTER_SECRET` denotes the size in bits of all credential attributes, not just master secret.
+                let _m = bn_rand(LARGE_MASTER_SECRET).unwrap();
+                let _q = _m.add(&s).unwrap();
+                m.insert(name.clone(), _m);
+                q.insert(name.clone(), _q);
+            }
+
+            let m_2 = bn_rand(LARGE_MASTER_SECRET).unwrap();
+            let q_m_2 = m_2.add(&s).unwrap();
+
+            let T_1_numr = A_prime.mod_exp(&LARGE_E_START_VALUE, &n, None).unwrap();
+            let T_1_den = p_key.z.try_clone().unwrap();
+            let mut T1 = T_1_numr.mod_div(&T_1_den, &n, None).unwrap();
+            T1 = T1.mod_exp(&s, &n, None).unwrap();
+            let T_2 = calc_teq(&p_key, &A_prime, &s_prime, &s_prime_prime,
+                               &q, &q_m_2, &attr_names).unwrap();
+            let T = T1.mod_mul(&T_2, &n, None).unwrap();
+            let T_bytes = T.to_bytes().unwrap();
+            //println!("T_bytes={:?}", &T_bytes);
+
+            let eq_proof = PrimaryEqualProof {
+                revealed_attrs: BTreeMap::new(),
+                a_prime: A_prime.try_clone().unwrap(),
+                e: s_prime.try_clone().unwrap(),
+                v: s_prime_prime.try_clone().unwrap(),
+                m: q,
+                m2: q_m_2.try_clone().unwrap()
+            };
+
+            // Commit to random value
+            let (r, t_K) = commit_to_random_with_generator(&h).unwrap();
+            //println!("t_K={:?}", &t_K.to_bytes().unwrap());
+
+            let c_list: Vec<Vec<u8>> = vec![A_prime.to_bytes().unwrap()];
+            let mut tau_list: Vec<Vec<u8>> = vec![];
+            tau_list.extend_from_slice(&vec![t_K.to_bytes().unwrap()]);
+            tau_list.extend_from_slice(&vec![T_bytes]);
+
+            let primary_proof = PrimaryProof {
+                eq_proof,
+                ne_proofs: Vec::new(),
+            };
+            let proof = SubProof {
+                primary_proof,
+                non_revoc_proof: None,
+            };
+            let proofs: Vec<SubProof> = vec![proof];
+
+            let c_H = compute_challenge(&tau_list, &c_list, &nonce).unwrap();
+            println!("challenge={:?}", &c_H.to_bytes().unwrap());
+            let c2 = s.try_clone().unwrap();
+
+            let _c1 = BigNumber::xor_bn(&c_H, &c2).unwrap();
+            let c1 = bignum_to_field_element(&_c1).unwrap();
+
+            let c1x = c1.mul_mod(&x).unwrap();      // c1*x
+            let x_hat = r.add_mod(&c1x).unwrap();   // r + c1*x
+
+            // For Debugging, to_hex gives different result even when numbers are same.
+            // Use to_bytes instead
+            /*let h_c1x = h.mul(&c1x).unwrap();       // h^{c1*x}
+            println!("h_c1x={:?}", &h_c1x.to_bytes().unwrap());
+            let K_c1 = K.mul(&c1).unwrap();         // K^c1
+            println!("K_c1={:?}", &K_c1.to_bytes().unwrap());
+            // h^{c1*x} = {h^x}^c1 = K^c1
+            assert_eq!(h_c1x, K_c1);
+            let h_x_hat = h.mul(&x_hat).unwrap();   // h^{x_hat}
+            println!("h_x_hat={:?}", &h_x_hat.to_bytes().unwrap());
+            let t_K_h_c1x = t_K.add(&h_c1x).unwrap();   // t_K*h^{c1*x}
+            println!("t_K + h_c1x={:?}", &t_K_h_c1x.to_bytes().unwrap());
+            // t_K*h^{c1*x} = h^r*h^{c1*x} = h^(r+ c1*x) = h^(x_hat)
+            assert_eq!(h_x_hat, t_K_h_c1x);*/
+
+            let aggregated_proof = AggregatedProof {
+                c_hash: c2.try_clone().unwrap(),
+                c_list
+            };
+
+            let proof = Proof {
+                proofs,
+                aggregated_proof,
+            };
+
+            let sub_proof_request = helpers::gvt_sub_proof_request_2();
+
+            let mut proof_verifier = Verifier::new_proof_verifier().unwrap();
+            proof_verifier.add_common_attribute(LINK_SECRET).unwrap();
+
+            proof_verifier
+                .add_sub_proof_request(
+                    &sub_proof_request,
+                    &credential_schema,
+                    &non_credential_schema,
+                    &credential_pub_key,
+                    None,
+                    None,
+                )
+                .unwrap();
+
+            assert!(
+                proof_verifier.verify_repudiable(
+                    &proof, &nonce, &K, &c1, &h, &x_hat, &c2
+                ).unwrap()
+            )
         }
     }
 
@@ -5423,7 +5552,7 @@ mod cl_tests {
         pub fn gvt_credential_values(master_secret: &MasterSecret) -> CredentialValues {
             let mut credential_values_builder = Issuer::new_credential_values_builder().unwrap();
             credential_values_builder
-                .add_value_known("master_secret", &master_secret.value().unwrap())
+                .add_value_hidden("master_secret", &master_secret.value().unwrap())
                 .unwrap();
             credential_values_builder
                 .add_dec_known("name", "1139481716457488690172217916278103335")
@@ -5446,7 +5575,7 @@ mod cl_tests {
         pub fn xyz_credential_values(master_secret: &MasterSecret) -> CredentialValues {
             let mut credential_values_builder = Issuer::new_credential_values_builder().unwrap();
             credential_values_builder
-                .add_value_known("master_secret", &master_secret.value().unwrap())
+                .add_value_hidden("master_secret", &master_secret.value().unwrap())
                 .unwrap();
             credential_values_builder
                 .add_dec_known("status", "51792877103171595686471452153480627530895")
@@ -5460,7 +5589,7 @@ mod cl_tests {
         pub fn pqr_credential_values(master_secret: &MasterSecret) -> CredentialValues {
             let mut credential_values_builder = Issuer::new_credential_values_builder().unwrap();
             credential_values_builder
-                .add_value_known("master_secret", &master_secret.value().unwrap())
+                .add_value_hidden("master_secret", &master_secret.value().unwrap())
                 .unwrap();
             credential_values_builder
                 .add_dec_known("name", "1139481716457488690172217916278103335")
@@ -5474,7 +5603,7 @@ mod cl_tests {
         pub fn pqr_credential_values_1(master_secret: &MasterSecret) -> CredentialValues {
             let mut credential_values_builder = Issuer::new_credential_values_builder().unwrap();
             credential_values_builder
-                .add_value_known("master_secret", &master_secret.value().unwrap())
+                .add_value_hidden("master_secret", &master_secret.value().unwrap())
                 .unwrap();
             credential_values_builder
                 .add_dec_known("name", "7181645748869017221791627810333511394")
@@ -5524,6 +5653,14 @@ mod cl_tests {
             gvt_sub_proof_request_builder
                 .add_revealed_attr("sex")
                 .unwrap();
+            gvt_sub_proof_request_builder.finalize().unwrap()
+        }
+
+        /// Proof request with no revealed attributes or predicates.
+        /// Only proves possession of credential.
+        pub fn gvt_sub_proof_request_2() -> SubProofRequest {
+            let mut gvt_sub_proof_request_builder =
+                Verifier::new_sub_proof_request_builder().unwrap();
             gvt_sub_proof_request_builder.finalize().unwrap()
         }
     }

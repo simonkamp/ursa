@@ -1156,16 +1156,16 @@ impl ProofBuilder {
     pub fn add_commitment_for_repudiation(&mut self, K: &PointG1, h: &PointG1) -> UrsaCryptoResult<(GroupOrderElement, GroupOrderElement)> {
         let w = GroupOrderElement::new()?;
         let v = GroupOrderElement::new()?;
-        let t = get_pedersen_commitment_ec(K, &w, h, &v)?;
+        let w_neg = w.mod_neg()?;
+        let t = get_pedersen_commitment_ec(K, &w_neg, h, &v)?;
         self.tau_list.extend_from_slice(&vec![t.to_bytes()?]);
         Ok((w, v))
     }
 
     pub fn compute_challenge_for_repudiation(&self, nonce: &Nonce, c1: &GroupOrderElement) -> UrsaCryptoResult<BigNumber> {
         let combined_challenge = self.compute_challenge(nonce)?;
-        let c_H = bignum_to_field_element(&combined_challenge)?;
-        let c2 = c_H.sub_mod(&c1)?;
-        field_element_to_bignum(&c2)
+        let c2 = BigNumber::xor_bn(&combined_challenge, &field_element_to_bignum(&c1)?)?;
+        Ok(c2)
     }
 
     pub fn compute_challenge(&self, nonce: &Nonce) -> UrsaCryptoResult<BigNumber> {

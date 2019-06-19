@@ -695,6 +695,7 @@ pub fn compute_response_for_single_value(value: &BigNumber, blinding: &BigNumber
         .add(blinding)
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
