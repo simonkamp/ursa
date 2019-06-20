@@ -1251,6 +1251,39 @@ fn clone_credential_value_map<K: Clone + Eq + Ord>(
     Ok(res)
 }
 
+pub trait ScopedPseudonymDb {
+    fn add_pseudonym(&mut self, pseudonym: &BigNumber) -> UrsaCryptoResult<()>;
+
+    fn has_pseudonym(&self, pseudonym: &BigNumber) -> UrsaCryptoResult<bool>;
+}
+
+/// In memory implementation of `ScopedPseudonymDb` that stores all pseudonyms in a HashSet.
+#[derive(Debug, Clone)]
+pub struct InMemoryScopedPseudonymDb {
+    // Byte representation of pseudonyms
+    pseudonyms: HashSet<Vec<u8>>,
+}
+
+impl ScopedPseudonymDb for InMemoryScopedPseudonymDb {
+    fn add_pseudonym(&mut self, pseudonym: &BigNumber) -> UrsaCryptoResult<()> {
+        let bytes = pseudonym.to_bytes()?;
+        self.pseudonyms.insert(bytes);
+        Ok(())
+    }
+
+    fn has_pseudonym(&self, pseudonym: &BigNumber) -> UrsaCryptoResult<bool> {
+        let bytes = pseudonym.to_bytes()?;
+        Ok(self.pseudonyms.contains(&bytes))
+    }
+}
+
+impl InMemoryScopedPseudonymDb {
+    pub fn new() -> UrsaCryptoResult<Self> {
+        let pseudonyms: HashSet<Vec<u8>> = HashSet::new();
+        Ok(Self { pseudonyms })
+    }
+}
+
 #[cfg(test)]
 mod test {
     use self::issuer::Issuer;

@@ -22,7 +22,7 @@ mod cl_tests {
 
     mod test {
         use super::*;
-        use ursa::cl::NonCredentialSchemaBuilder;
+        use ursa::cl::{NonCredentialSchemaBuilder, InMemoryScopedPseudonymDb};
         use ursa::errors::prelude::*;
 
         #[test]
@@ -5240,6 +5240,242 @@ mod cl_tests {
                 res.unwrap_err().kind()
             );
         }
+
+        #[test]
+        fn anoncreds_unscoped_pseudonym_fails_to_get_credential() {
+            // Prover does not create scoped pseudonym and thus fails to get credential
+            HLCryptoDefaultLogger::init(None).ok();
+
+            // 1. Prover creates master secret
+            let master_secret = Prover::new_master_secret().unwrap();
+
+            let gvt_credential_values = helpers::gvt_credential_values(&master_secret);
+
+            // 2. Issuer creates and signs GVT credential for Prover
+            let credential_schema = helpers::gvt_credential_schema();
+            let non_credential_schema = helpers::non_credential_schema();
+            let (
+                gvt_credential_pub_key,
+                gvt_credential_priv_key,
+                gvt_credential_key_correctness_proof,
+            ) = Issuer::new_credential_def(&credential_schema, &non_credential_schema, false)
+                .unwrap();
+
+            let mut pseudonym_db = InMemoryScopedPseudonymDb::new().unwrap();
+
+            // Nonce given by issuer to prover
+            let credential_nonce = new_nonce().unwrap();
+
+            let (
+                blinded_credential_secrets,
+                credential_secrets_blinding_factors,
+                blinded_credential_secrets_correctness_proof,
+            ) = Prover::blind_credential_secrets(
+                &gvt_credential_pub_key,
+                &gvt_credential_key_correctness_proof,
+                &gvt_credential_values,
+                &credential_nonce,
+            )
+                .unwrap();
+
+            let gvt_credential_issuance_nonce = new_nonce().unwrap();
+
+            let res = Issuer::sign_credential_for_scope(
+                    PROVER_ID,
+                    &blinded_credential_secrets,
+                    &blinded_credential_secrets_correctness_proof,
+                    &credential_nonce,
+                    &gvt_credential_issuance_nonce,
+                    &gvt_credential_values,
+                    &gvt_credential_pub_key,
+                    &gvt_credential_priv_key,
+                    &mut pseudonym_db
+                );
+            assert_eq!(
+                UrsaCryptoErrorKind::InvalidStructure,
+                res.unwrap_err().kind()
+            );
+        }
+
+        #[test]
+        fn anoncreds_repeated_scoped_pseudonym_fails_to_get_credential() {
+            // Prover creates 2 scoped pseudonyms from same link secret and makes 2 requests
+            // for credential to the same issuer. The first request succeeds but second fails.
+
+            HLCryptoDefaultLogger::init(None).ok();
+
+            // 1. Prover creates master secret
+            let master_secret = Prover::new_master_secret().unwrap();
+
+            let gvt_credential_values = helpers::gvt_credential_values(&master_secret);
+
+            // 2. Issuer creates and signs GVT credential for Prover
+            let credential_schema = helpers::gvt_credential_schema();
+            let non_credential_schema = helpers::non_credential_schema();
+            let (
+                gvt_credential_pub_key,
+                gvt_credential_priv_key,
+                gvt_credential_key_correctness_proof,
+            ) = Issuer::new_credential_def(&credential_schema, &non_credential_schema, false)
+                .unwrap();
+
+            let mut pseudonym_db = InMemoryScopedPseudonymDb::new().unwrap();
+
+            // Nonce given by issuer to prover
+            let credential_nonce = new_nonce().unwrap();
+
+            let (
+                blinded_credential_secrets,
+                credential_secrets_blinding_factors,
+                blinded_credential_secrets_correctness_proof,
+            ) = Prover::blind_credential_secrets_scoped(
+                &gvt_credential_pub_key,
+                &gvt_credential_key_correctness_proof,
+                &gvt_credential_values,
+                &credential_nonce,
+            )
+                .unwrap();
+
+            let gvt_credential_issuance_nonce = new_nonce().unwrap();
+
+            // First credential request succeeds.
+            Issuer::sign_credential_for_scope(
+                    PROVER_ID,
+                    &blinded_credential_secrets,
+                    &blinded_credential_secrets_correctness_proof,
+                    &credential_nonce,
+                    &gvt_credential_issuance_nonce,
+                    &gvt_credential_values,
+                    &gvt_credential_pub_key,
+                    &gvt_credential_priv_key,
+                    &mut pseudonym_db
+                )
+                    .unwrap();
+
+            // Reusing link secret for credential request.
+            let credential_nonce_1 = new_nonce().unwrap();
+            let (
+                blinded_credential_secrets_1,
+                credential_secrets_blinding_factors_1,
+                blinded_credential_secrets_correctness_proof_1,
+            ) = Prover::blind_credential_secrets_scoped(
+                &gvt_credential_pub_key,
+                &gvt_credential_key_correctness_proof,
+                &gvt_credential_values,
+                &credential_nonce_1,
+            )
+                .unwrap();
+
+            let gvt_credential_issuance_nonce_1 = new_nonce().unwrap();
+
+            // Second credential request fails.
+            let res = Issuer::sign_credential_for_scope(
+                    PROVER_ID,
+                    &blinded_credential_secrets_1,
+                    &blinded_credential_secrets_correctness_proof_1,
+                    &credential_nonce_1,
+                    &gvt_credential_issuance_nonce_1,
+                    &gvt_credential_values,
+                    &gvt_credential_pub_key,
+                    &gvt_credential_priv_key,
+                    &mut pseudonym_db
+            );
+            assert_eq!(
+                UrsaCryptoErrorKind::InvalidStructure,
+                res.unwrap_err().kind()
+            );
+        }
+
+        #[test]
+        fn anoncreds_prover_uses_2_scoped_pseudonyms_to_get_2_credentials() {
+            // Prover creates 2 scoped pseudonyms using 2 different link secrets and makes
+            // 2 requests for credential to the same issuer. Both requests succeed.
+
+            HLCryptoDefaultLogger::init(None).ok();
+
+            // 1. Prover creates master secret
+            let master_secret = Prover::new_master_secret().unwrap();
+
+            let gvt_credential_values = helpers::gvt_credential_values(&master_secret);
+
+            // 2. Issuer creates and signs GVT credential for Prover
+            let credential_schema = helpers::gvt_credential_schema();
+            let non_credential_schema = helpers::non_credential_schema();
+            let (
+                gvt_credential_pub_key,
+                gvt_credential_priv_key,
+                gvt_credential_key_correctness_proof,
+            ) = Issuer::new_credential_def(&credential_schema, &non_credential_schema, false)
+                .unwrap();
+
+            let mut pseudonym_db = InMemoryScopedPseudonymDb::new().unwrap();
+
+            // Nonce given by issuer to prover
+            let credential_nonce = new_nonce().unwrap();
+
+            let (
+                blinded_credential_secrets,
+                credential_secrets_blinding_factors,
+                blinded_credential_secrets_correctness_proof,
+            ) = Prover::blind_credential_secrets_scoped(
+                &gvt_credential_pub_key,
+                &gvt_credential_key_correctness_proof,
+                &gvt_credential_values,
+                &credential_nonce,
+            )
+                .unwrap();
+
+            let gvt_credential_issuance_nonce = new_nonce().unwrap();
+
+            // First credential request succeeds.
+            Issuer::sign_credential_for_scope(
+                PROVER_ID,
+                &blinded_credential_secrets,
+                &blinded_credential_secrets_correctness_proof,
+                &credential_nonce,
+                &gvt_credential_issuance_nonce,
+                &gvt_credential_values,
+                &gvt_credential_pub_key,
+                &gvt_credential_priv_key,
+                &mut pseudonym_db
+            )
+                .unwrap();
+
+            // The second pseudonym is from a different link secret
+            let master_secret_1 = Prover::new_master_secret().unwrap();
+            let gvt_credential_values_1 = helpers::gvt_credential_values(&master_secret_1);
+
+            // Nonce given by issuer to prover
+            let credential_nonce_1 = new_nonce().unwrap();
+
+            let (
+                blinded_credential_secrets_1,
+                credential_secrets_blinding_factors_1,
+                blinded_credential_secrets_correctness_proof_1,
+            ) = Prover::blind_credential_secrets_scoped(
+                &gvt_credential_pub_key,
+                &gvt_credential_key_correctness_proof,
+                &gvt_credential_values_1,
+                &credential_nonce_1,
+            )
+                .unwrap();
+
+            let gvt_credential_issuance_nonce_1 = new_nonce().unwrap();
+
+            // Second credential request succeeds.
+            Issuer::sign_credential_for_scope(
+                PROVER_ID,
+                &blinded_credential_secrets_1,
+                &blinded_credential_secrets_correctness_proof_1,
+                &credential_nonce_1,
+                &gvt_credential_issuance_nonce_1,
+                &gvt_credential_values_1,
+                &gvt_credential_pub_key,
+                &gvt_credential_priv_key,
+                &mut pseudonym_db
+            )
+                .unwrap();
+        }
     }
 
     mod helpers {
@@ -5281,7 +5517,7 @@ mod cl_tests {
         pub fn gvt_credential_values(master_secret: &MasterSecret) -> CredentialValues {
             let mut credential_values_builder = Issuer::new_credential_values_builder().unwrap();
             credential_values_builder
-                .add_value_known("master_secret", &master_secret.value().unwrap())
+                .add_value_hidden("master_secret", &master_secret.value().unwrap())
                 .unwrap();
             credential_values_builder
                 .add_dec_known("name", "1139481716457488690172217916278103335")
@@ -5304,7 +5540,7 @@ mod cl_tests {
         pub fn xyz_credential_values(master_secret: &MasterSecret) -> CredentialValues {
             let mut credential_values_builder = Issuer::new_credential_values_builder().unwrap();
             credential_values_builder
-                .add_value_known("master_secret", &master_secret.value().unwrap())
+                .add_value_hidden("master_secret", &master_secret.value().unwrap())
                 .unwrap();
             credential_values_builder
                 .add_dec_known("status", "51792877103171595686471452153480627530895")
@@ -5318,7 +5554,7 @@ mod cl_tests {
         pub fn pqr_credential_values(master_secret: &MasterSecret) -> CredentialValues {
             let mut credential_values_builder = Issuer::new_credential_values_builder().unwrap();
             credential_values_builder
-                .add_value_known("master_secret", &master_secret.value().unwrap())
+                .add_value_hidden("master_secret", &master_secret.value().unwrap())
                 .unwrap();
             credential_values_builder
                 .add_dec_known("name", "1139481716457488690172217916278103335")
@@ -5332,7 +5568,7 @@ mod cl_tests {
         pub fn pqr_credential_values_1(master_secret: &MasterSecret) -> CredentialValues {
             let mut credential_values_builder = Issuer::new_credential_values_builder().unwrap();
             credential_values_builder
-                .add_value_known("master_secret", &master_secret.value().unwrap())
+                .add_value_hidden("master_secret", &master_secret.value().unwrap())
                 .unwrap();
             credential_values_builder
                 .add_dec_known("name", "7181645748869017221791627810333511394")

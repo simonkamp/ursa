@@ -89,43 +89,15 @@ impl Prover {
             credential_values,
             credential_nonce
         );
-        Prover::_check_credential_key_correctness_proof(
-            &credential_pub_key.p_key,
+        let (blinded_credential_secrets,
+            credential_secrets_blinding_factors,
+            blinded_credential_secrets_correctness_proof) = Self::_blind_credential_secrets(
+            credential_pub_key,
             credential_key_correctness_proof,
+            credential_values,
+            credential_nonce,
+            false
         )?;
-
-        let blinded_primary_credential_secrets =
-            Prover::_generate_blinded_primary_credential_secrets_factors(
-                &credential_pub_key.p_key,
-                &credential_values,
-            )?;
-
-        let blinded_revocation_credential_secrets = match credential_pub_key.r_key {
-            Some(ref r_pk) => Some(Prover::_generate_blinded_revocation_credential_secrets(
-                r_pk,
-            )?),
-            _ => None,
-        };
-
-        let blinded_credential_secrets_correctness_proof =
-            Prover::_new_blinded_credential_secrets_correctness_proof(
-                &credential_pub_key.p_key,
-                &blinded_primary_credential_secrets,
-                &credential_nonce,
-                &credential_values,
-            )?;
-
-        let blinded_credential_secrets = BlindedCredentialSecrets {
-            u: blinded_primary_credential_secrets.u,
-            ur: blinded_revocation_credential_secrets.as_ref().map(|d| d.ur),
-            hidden_attributes: blinded_primary_credential_secrets.hidden_attributes,
-            committed_attributes: blinded_primary_credential_secrets.committed_attributes,
-        };
-
-        let credential_secrets_blinding_factors = CredentialSecretsBlindingFactors {
-            v_prime: blinded_primary_credential_secrets.v_prime,
-            vr_prime: blinded_revocation_credential_secrets.map(|d| d.vr_prime),
-        };
 
         trace!(
             "Prover::blind_credential_secrets: <<< blinded_credential_secrets: {:?}, \
@@ -278,6 +250,89 @@ impl Prover {
         Ok(())
     }
 
+    pub fn blind_credential_secrets_scoped(
+        credential_pub_key: &CredentialPublicKey,
+        credential_key_correctness_proof: &CredentialKeyCorrectnessProof,
+        credential_values: &CredentialValues,
+        credential_nonce: &Nonce,
+    ) -> Result<
+        (
+            BlindedCredentialSecrets,
+            CredentialSecretsBlindingFactors,
+            BlindedCredentialSecretsCorrectnessProof,
+        ),
+        UrsaCryptoError,
+    > {
+        Self::_blind_credential_secrets(
+            credential_pub_key,
+            credential_key_correctness_proof,
+            credential_values,
+            credential_nonce,
+            true
+        )
+    }
+
+    fn _blind_credential_secrets(
+        credential_pub_key: &CredentialPublicKey,
+        credential_key_correctness_proof: &CredentialKeyCorrectnessProof,
+        credential_values: &CredentialValues,
+        credential_nonce: &Nonce,
+        scoped: bool
+    ) -> Result<
+        (
+            BlindedCredentialSecrets,
+            CredentialSecretsBlindingFactors,
+            BlindedCredentialSecretsCorrectnessProof,
+        ),
+        UrsaCryptoError,
+    > {
+        Prover::_check_credential_key_correctness_proof(
+            &credential_pub_key.p_key,
+            credential_key_correctness_proof,
+        )?;
+
+        let blinded_primary_credential_secrets =
+            Prover::_generate_blinded_primary_credential_secrets_factors(
+                &credential_pub_key.p_key,
+                &credential_values,
+                scoped
+            )?;
+
+        let blinded_revocation_credential_secrets = match credential_pub_key.r_key {
+            Some(ref r_pk) => Some(Prover::_generate_blinded_revocation_credential_secrets(
+                r_pk,
+            )?),
+            _ => None,
+        };
+
+        let blinded_credential_secrets_correctness_proof =
+            Prover::_new_blinded_credential_secrets_correctness_proof(
+                &credential_pub_key.p_key,
+                &blinded_primary_credential_secrets,
+                &credential_nonce,
+                &credential_values,
+                scoped
+            )?;
+
+        let blinded_credential_secrets = BlindedCredentialSecrets {
+            u: blinded_primary_credential_secrets.u,
+            ur: blinded_revocation_credential_secrets.as_ref().map(|d| d.ur),
+            hidden_attributes: blinded_primary_credential_secrets.hidden_attributes,
+            committed_attributes: blinded_primary_credential_secrets.committed_attributes,
+        };
+
+        let credential_secrets_blinding_factors = CredentialSecretsBlindingFactors {
+            v_prime: blinded_primary_credential_secrets.v_prime,
+            vr_prime: blinded_revocation_credential_secrets.map(|d| d.vr_prime),
+        };
+
+        Ok((
+            blinded_credential_secrets,
+            credential_secrets_blinding_factors,
+            blinded_credential_secrets_correctness_proof,
+        ))
+    }
+
     /// Creates and returns proof builder.
     ///
     /// The purpose of proof builder is building of proof entity according to the given request .
@@ -397,9 +452,11 @@ impl Prover {
         Ok(())
     }
 
+    // For scoped pseudonyms, i.e. with randomness 0 each time so that the same pseudonym is created.
     fn _generate_blinded_primary_credential_secrets_factors(
         p_pub_key: &CredentialPrimaryPublicKey,
         credential_values: &CredentialValues,
+        scoped: bool
     ) -> UrsaCryptoResult<PrimaryBlindedCredentialSecretsFactors> {
         trace!("Prover::_generate_blinded_primary_credential_secrets_factors: >>> p_pub_key: {:?}, credential_values: {:?}",
                p_pub_key,
@@ -407,7 +464,8 @@ impl Prover {
         );
 
         let mut ctx = BigNumber::new_context()?;
-        let v_prime = bn_rand(LARGE_VPRIME)?;
+        // If scoped is true, set v_prime to 0 so that p_pub_key.s^v_prime = 1
+        let v_prime = if scoped { BigNumber::from_u32(0)? } else { bn_rand(LARGE_VPRIME)? };
 
         //Hidden attributes are combined in this value
         let hidden_attributes = credential_values
@@ -426,8 +484,9 @@ impl Prover {
                     )
                 })?;
                 let cred_value = &credential_values.attrs_values[attr];
+                let m = pk_r.mod_exp(cred_value.value(), &p_pub_key.n, Some(&mut ctx))?;
                 acc?.mod_mul(
-                    &pk_r.mod_exp(cred_value.value(), &p_pub_key.n, Some(&mut ctx))?,
+                    &m,
                     &p_pub_key.n,
                     Some(&mut ctx),
                 )
@@ -491,11 +550,13 @@ impl Prover {
         Ok(revocation_blinded_credential_secrets)
     }
 
+    // For scoped pseudonyms, i.e. with randomness 0 each time so that the same pseudonym is created.
     fn _new_blinded_credential_secrets_correctness_proof(
         p_pub_key: &CredentialPrimaryPublicKey,
         blinded_primary_credential_secrets: &PrimaryBlindedCredentialSecretsFactors,
         nonce: &BigNumber,
         credential_values: &CredentialValues,
+        scoped: bool
     ) -> UrsaCryptoResult<BlindedCredentialSecretsCorrectnessProof> {
         trace!(
             "Prover::_new_blinded_credential_secrets_correctness_proof: >>> p_pub_key: {:?}, \
@@ -510,7 +571,8 @@ impl Prover {
 
         let mut ctx = BigNumber::new_context()?;
 
-        let v_dash_tilde = bn_rand(LARGE_VPRIME_TILDE)?;
+        // If scoped is true, set v_dash_tilde to 0 so that p_pub_key.s^v_dash_tilde = 1
+        let v_dash_tilde = if scoped { BigNumber::from_u32(0)? } else { bn_rand(LARGE_VPRIME_TILDE)? };
 
         let mut m_tildes = BTreeMap::new();
         let mut r_tildes = BTreeMap::new();
@@ -571,9 +633,14 @@ impl Prover {
 
         let c = get_hash_as_int(&[values])?;
 
-        let v_dash_cap = c
-            .mul(&blinded_primary_credential_secrets.v_prime, Some(&mut ctx))?
-            .add(&v_dash_tilde)?;
+        // When scoped is true, v_dash_cap should be 0
+        let v_dash_cap = if scoped {
+            BigNumber::from_u32(0)?
+        } else {
+            c
+                .mul(&blinded_primary_credential_secrets.v_prime, Some(&mut ctx))?
+                .add(&v_dash_tilde)?
+        };
 
         let mut m_caps = BTreeMap::new();
         let mut r_caps = BTreeMap::new();
@@ -1959,7 +2026,7 @@ mod tests {
         let credential_values = issuer::mocks::credential_values();
 
         let _blinded_primary_credential_secrets =
-            Prover::_generate_blinded_primary_credential_secrets_factors(&pk, &credential_values)
+            Prover::_generate_blinded_primary_credential_secrets_factors(&pk, &credential_values, false)
                 .unwrap();
         let expected_u = BigNumber::from_dec("90379212883377051942444457214004439563879517047934957924109506327827266424864106127396714346970738216284320507530527754324729206801422601992700522417322083581628939167117187181423638437856384315973558857250692265909530560844452355964326255821057551846167569170509524949792604814958417070636632379251447321861706466435758587453671398786938921675857732974923901803378547250372362630279485056161267415391507414010183531088200803261695568846058335634754886427522606528221525388671780017596236038760448329929785833010252968356814800693372830944570065390232033948827218950397755480445898892886723022422888608162061797883541").unwrap();
         let expected_v_prime = BigNumber::from_dec("35131625843806290832574870589259287147303302356085937450138681169270844305658441640899780357851554390281352797472151859633451190372182905767740276000477099644043795107449461869975792759973231599572009337886283219344284767785705740629929916685684025616389621432096690068102576167647117576924865030253290356476886389376786906469624913865400296221181743871195998667521041628188272244376790322856843509187067488962831880868979749045372839549034465343690176440012266969614156191820420452812733264350018673445974099278245215963827842041818557926829011513408602244298030173493359464182527821314118075880620818817455331127028576670474022443879858290").unwrap();

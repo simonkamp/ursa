@@ -271,35 +271,15 @@ impl Issuer {
             secret!(credential_priv_key)
         );
 
-        Issuer::_check_blinded_credential_secrets_correctness_proof(
-            blinded_credential_secrets,
-            blinded_credential_secrets_correctness_proof,
-            credential_nonce,
-            &credential_pub_key.p_key,
-        )?;
-
-        // In the anoncreds whitepaper, `credential context` is denoted by `m2`
-        let cred_context = Issuer::_gen_credential_context(prover_id, None)?;
-
-        let (p_cred, q) = Issuer::_new_primary_credential(
-            &cred_context,
-            credential_pub_key,
-            credential_priv_key,
-            blinded_credential_secrets,
-            credential_values,
-        )?;
-
-        let cred_signature = CredentialSignature {
-            p_credential: p_cred,
-            r_credential: None,
-        };
-
-        let signature_correctness_proof = Issuer::_new_signature_correctness_proof(
-            &credential_pub_key.p_key,
-            &credential_priv_key.p_key,
-            &cred_signature.p_credential,
-            &q,
-            credential_issuance_nonce,
+        let (cred_signature, signature_correctness_proof) = Self::_sign_credential(prover_id,
+                               blinded_credential_secrets,
+                               blinded_credential_secrets_correctness_proof,
+                               credential_nonce,
+                               credential_issuance_nonce,
+                               credential_values,
+                               credential_pub_key,
+                               credential_priv_key,
+                               false
         )?;
 
         trace!(
@@ -413,6 +393,7 @@ impl Issuer {
             blinded_credential_secrets_correctness_proof,
             credential_nonce,
             &credential_pub_key.p_key,
+            false
         )?;
 
         // In the anoncreds whitepaper, `credential context` is denoted by `m2`
@@ -718,6 +699,88 @@ impl Issuer {
         Ok((cred_pr_pub_key, cred_pr_priv_key, cred_pr_pub_key_metadata))
     }
 
+    /// Issuer will need a `ScopedPseudonymDb` to check for used pseudonyms
+    pub fn sign_credential_for_scope(
+        prover_id: &str,
+        blinded_credential_secrets: &BlindedCredentialSecrets,
+        blinded_credential_secrets_correctness_proof: &BlindedCredentialSecretsCorrectnessProof,
+        credential_nonce: &Nonce,
+        credential_issuance_nonce: &Nonce,
+        credential_values: &CredentialValues,
+        credential_pub_key: &CredentialPublicKey,
+        credential_priv_key: &CredentialPrivateKey,
+        pseudonym_db: &mut ScopedPseudonymDb
+    ) -> UrsaCryptoResult<(CredentialSignature, SignatureCorrectnessProof)> {
+        // Check if pseudonym already seen
+        if pseudonym_db.has_pseudonym(&blinded_credential_secrets.u)? {
+            return Err(err_msg(
+                UrsaCryptoErrorKind::InvalidStructure,
+                "Scoped pseudonym already present",
+            ));
+        }
+        let resp = Self::_sign_credential(prover_id,
+                               blinded_credential_secrets,
+                               blinded_credential_secrets_correctness_proof,
+                               credential_nonce,
+                               credential_issuance_nonce,
+                               credential_values,
+                               credential_pub_key,
+                               credential_priv_key,
+                                true
+        )?;
+        // Store new pseudonym
+        pseudonym_db.add_pseudonym(&blinded_credential_secrets.u)?;
+        Ok(resp)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn _sign_credential(
+        prover_id: &str,
+        blinded_credential_secrets: &BlindedCredentialSecrets,
+        blinded_credential_secrets_correctness_proof: &BlindedCredentialSecretsCorrectnessProof,
+        credential_nonce: &Nonce,
+        credential_issuance_nonce: &Nonce,
+        credential_values: &CredentialValues,
+        credential_pub_key: &CredentialPublicKey,
+        credential_priv_key: &CredentialPrivateKey,
+        scope: bool
+    ) -> UrsaCryptoResult<(CredentialSignature, SignatureCorrectnessProof)> {
+
+        Issuer::_check_blinded_credential_secrets_correctness_proof(
+            blinded_credential_secrets,
+            blinded_credential_secrets_correctness_proof,
+            credential_nonce,
+            &credential_pub_key.p_key,
+            scope
+        )?;
+
+        // In the anoncreds whitepaper, `credential context` is denoted by `m2`
+        let cred_context = Issuer::_gen_credential_context(prover_id, None)?;
+
+        let (p_cred, q) = Issuer::_new_primary_credential(
+            &cred_context,
+            credential_pub_key,
+            credential_priv_key,
+            blinded_credential_secrets,
+            credential_values,
+        )?;
+
+        let cred_signature = CredentialSignature {
+            p_credential: p_cred,
+            r_credential: None,
+        };
+
+        let signature_correctness_proof = Issuer::_new_signature_correctness_proof(
+            &credential_pub_key.p_key,
+            &credential_priv_key.p_key,
+            &cred_signature.p_credential,
+            &q,
+            credential_issuance_nonce,
+        )?;
+
+        Ok((cred_signature, signature_correctness_proof))
+    }
+
     fn _new_credential_revocation_keys() -> UrsaCryptoResult<(
         CredentialRevocationPublicKey,
         CredentialRevocationPrivateKey,
@@ -900,12 +963,21 @@ impl Issuer {
         blinded_cred_secrets_correctness_proof: &BlindedCredentialSecretsCorrectnessProof,
         nonce: &Nonce,
         cred_pr_pub_key: &CredentialPrimaryPublicKey,
+        scoped: bool
     ) -> UrsaCryptoResult<()> {
         trace!("Issuer::_check_blinded_credential_secrets_correctness_proof: >>> blinded_cred_secrets: {:?}, blinded_cred_secrets_correctness_proof: {:?},\
          nonce: {:?}, cred_pr_pub_key: {:?}", blinded_cred_secrets, blinded_cred_secrets_correctness_proof, nonce, cred_pr_pub_key);
 
         let mut values: Vec<u8> = Vec::new();
         let mut ctx = BigNumber::new_context()?;
+
+        // For scoped pseudonyms, randomness should be 0
+        if scoped && (blinded_cred_secrets_correctness_proof.v_dash_cap != BigNumber::from_u32(0)?) {
+            return Err(err_msg(
+                UrsaCryptoErrorKind::InvalidStructure,
+                "For scoped pseudonym, v'_cap is not 0. BlindedCredentialSecrets correctness proof incorrect",
+            ));
+        }
 
         let u_cap = blinded_cred_secrets.hidden_attributes.iter().fold(
             blinded_cred_secrets
