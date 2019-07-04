@@ -7,6 +7,7 @@ mod hash;
 pub mod issuer;
 pub mod prover;
 pub mod verifier;
+pub mod cs_verifiable_encryption;
 
 use bn::BigNumber;
 use errors::prelude::*;

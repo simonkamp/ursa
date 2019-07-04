@@ -30,6 +30,7 @@ mod cl_tests {
         use ursa::utils::commitment::{get_pedersen_commitment_ec, commit_to_random, commit_to_random_with_generator};
         use ursa::cl::helpers::{compute_challenge, field_element_to_bignum, bignum_to_field_element, bn_rand, calc_teq};
         use std::collections::{HashMap, BTreeMap};
+        use ursa::cl::cs_verifiable_encryption::CSInspector;
 
         #[test]
         fn anoncreds_demo() {
@@ -5249,7 +5250,6 @@ mod cl_tests {
 
         #[test]
         fn anoncreds_repudiable_proof_works() {
-            // 2 credentials have attribute with same name and same value and the proof proves that values are same.
             HLCryptoDefaultLogger::init(None).ok();
 
             // 1. Prover creates master secret
@@ -5511,6 +5511,99 @@ mod cl_tests {
                 ).unwrap()
             )
         }
+
+        /*#[test]
+        fn anoncreds_verifiable_encryption() {
+            HLCryptoDefaultLogger::init(None).ok();
+
+            // 1. Prover creates master secret
+            let master_secret = Prover::new_master_secret().unwrap();
+
+            let gvt_credential_values = helpers::gvt_credential_values(&master_secret);
+
+            // 2. Issuer creates and signs GVT credential for Prover
+            let gvt_credential_schema = helpers::gvt_credential_schema();
+            let non_credential_schema = helpers::non_credential_schema();
+            let (
+                gvt_credential_pub_key,
+                gvt_credential_priv_key,
+                gvt_credential_key_correctness_proof,
+            ) = Issuer::new_credential_def(&gvt_credential_schema, &non_credential_schema, false)
+                .unwrap();
+
+            let gvt_credential_nonce = new_nonce().unwrap();
+
+            let (
+                gvt_blinded_credential_secrets,
+                gvt_credential_secrets_blinding_factors,
+                gvt_blinded_credential_secrets_correctness_proof,
+            ) = Prover::blind_credential_secrets(
+                &gvt_credential_pub_key,
+                &gvt_credential_key_correctness_proof,
+                &gvt_credential_values,
+                &gvt_credential_nonce,
+            )
+                .unwrap();
+
+            let gvt_credential_issuance_nonce = new_nonce().unwrap();
+
+            let (mut gvt_credential_signature, gvt_signature_correctness_proof) =
+                Issuer::sign_credential(
+                    PROVER_ID,
+                    &gvt_blinded_credential_secrets,
+                    &gvt_blinded_credential_secrets_correctness_proof,
+                    &gvt_credential_nonce,
+                    &gvt_credential_issuance_nonce,
+                    &gvt_credential_values,
+                    &gvt_credential_pub_key,
+                    &gvt_credential_priv_key,
+                )
+                    .unwrap();
+
+            // 3. Prover processes GVT credential
+            Prover::process_credential_signature(
+                &mut gvt_credential_signature,
+                &gvt_credential_values,
+                &gvt_signature_correctness_proof,
+                &gvt_credential_secrets_blinding_factors,
+                &gvt_credential_pub_key,
+                &gvt_credential_issuance_nonce,
+                None,
+                None,
+                None,
+            )
+                .unwrap();
+
+            let inspector = CSInspector::new(1).unwrap();
+            let messages = vec![
+                BigNumber::from_dec("5944657099558967239210949258394887428692050081607692519917050011144233115103").unwrap()
+            ];
+
+            // 6. Verifier creates nonce
+            let nonce = new_nonce().unwrap();
+
+            // 7. Verifier creates proof request for GVT
+            let gvt_sub_proof_request = helpers::gvt_sub_proof_request_1();
+
+            // 8. Prover creates proof builder
+            let mut proof_builder = Prover::new_proof_builder().unwrap();
+            proof_builder.add_common_attribute(LINK_SECRET).unwrap();
+
+            // 9. Prover adds GVT sub proof request
+            proof_builder
+                .add_sub_proof_request(
+                    &gvt_sub_proof_request,
+                    &gvt_credential_schema,
+                    &non_credential_schema,
+                    &gvt_credential_signature,
+                    &gvt_credential_values,
+                    &gvt_credential_pub_key,
+                    None,
+                    None,
+                )
+                .unwrap();
+
+        }*/
     }
 
     mod helpers {
@@ -5659,7 +5752,7 @@ mod cl_tests {
         /// Proof request with no revealed attributes or predicates.
         /// Only proves possession of credential.
         pub fn gvt_sub_proof_request_2() -> SubProofRequest {
-            let mut gvt_sub_proof_request_builder =
+            let gvt_sub_proof_request_builder =
                 Verifier::new_sub_proof_request_builder().unwrap();
             gvt_sub_proof_request_builder.finalize().unwrap()
         }
