@@ -56,3 +56,22 @@ pub struct DisclosedAttribute {
     pub index: u32,
     pub value: String,
 }
+
+pub struct Witness {
+    statement_witnesses: Vec<StatementWitness>,
+}
+
+pub enum StatementWitness {
+    SignatureBBS(SignatureBBSWitness),
+}
+
+pub struct SignatureBBSWitness {
+    // TODO: This needs the messages as well.
+    a: Vec<Vec<u8>>,
+    e: Vec<Vec<u8>>,
+    s: Vec<Vec<u8>>,
+}
+
+// TODO: Self attested attributes
+
+// TODO: Signatures should use Transcript as the challenge for Bulletproofs cannot be separated from other part of the proof

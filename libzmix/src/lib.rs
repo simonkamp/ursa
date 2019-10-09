@@ -11,3 +11,5 @@ pub mod errors;
 pub mod signatures;
 #[cfg(feature = "ver_enc")]
 pub mod verifiable_encryption;
+
+pub mod zkl;

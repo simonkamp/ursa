@@ -1,3 +1,4 @@
+pub mod sample_proof;
 pub mod spec;
 
 pub struct Parser {}
