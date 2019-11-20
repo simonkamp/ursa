@@ -7,16 +7,19 @@ use signatures::ps::pok_sig::{PoKOfSignature as PoKPSSig, PoKOfSignatureProof as
 use signatures::ps::signature::Signature as PSSig;
 use std::collections::{HashMap, HashSet};
 
+// TODO: Rename for better
+#[derive(Clone)]
+pub struct Ref {
+    statement_idx: usize,
+    message_idx: usize,
+}
+
 #[derive(Clone)]
 pub enum Statement {
     PoKSignatureBBS(PoKSignatureBBS),
     PoKSignaturePS(PoKSignaturePS),
-    /*Equality {
-
-    },*/
-    /*PublicEquality {
-        // Equivalent to reveal message
-    },*/
+    Equality(Vec<Ref>),
+    Inequality(Vec<Ref>),
 }
 
 #[derive(Clone)]
@@ -540,6 +543,8 @@ mod tests {
                 statement_witnesses: vec![witness_PS, witness_BBS],
             },
         );
+
+        // Verifier's part
         assert!(verify_proof(proof_spec, proof));
     }
 
