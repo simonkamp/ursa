@@ -76,6 +76,7 @@ pub struct SignaturePSProof {
     pub proof: PoKPSSigProof,
 }*/
 
+// TODO: Follow the Builder pattern like ProofSpecBuilder, add_clause, etc
 impl ProofSpec {
     pub fn new() -> Self {
         Self {
@@ -97,7 +98,7 @@ pub trait ProofModule {
     // TODO: Rename
     fn get_hash_contribution(
         &mut self,
-        statement: Statement,
+        //        statement: Statement,
         witness: StatementWitness,
         // TODO: Come back to blindings
         //blindings: Vec<FieldElement>,
@@ -113,8 +114,9 @@ pub trait ProofModule {
         //) -> Result<StatementProof, ZkLangError>;
     ) -> StatementProof;
     fn verify_proof_contribution(
+        &self,
         challenge: &FieldElement,
-        statement: Statement,
+        //        statement: Statement,
         proof: StatementProof,
         // TODO: Accepts errors too
         //    ) -> Result<HashContribution, ZkLangError>;
@@ -123,34 +125,41 @@ pub trait ProofModule {
 
 pub struct PSSigProofModule {
     pok_sig: Option<PoKPSSig>,
-    //statement: Option<Statement::PoKSignaturePS>,
+    statement: Statement::PoKSignaturePS,
 }
 
 impl PSSigProofModule {
-    pub fn new() -> Self {
+    pub fn new(statement: Statement::PoKSignaturePS) -> Self {
         // Question: Should the statement be stored in ProofModule?
-        Self { pok_sig: None }
+        Self {
+            pok_sig: None,
+            statement,
+        }
     }
 }
 
 impl ProofModule for PSSigProofModule {
     fn get_hash_contribution(
         &mut self,
-        statement: Statement,
+        //        statement: Statement,
         witness: StatementWitness,
     ) -> Vec<u8> {
-        let pok_sig = match (statement, witness) {
-            (
-                Statement::PoKSignaturePS {
-                    pk,
-                    params,
-                    revealed_messages,
-                },
-                StatementWitness::SignaturePS { sig, messages },
-            ) => {
-                let indices: HashSet<usize> =
-                    revealed_messages.into_iter().map(|(k, _)| k).collect();
-                PoKPSSig::init(&sig, &pk, &params, &messages, None, indices).unwrap()
+        let pok_sig = match witness {
+            StatementWitness::SignaturePS { sig, messages } => {
+                let indices: HashSet<usize> = (&self.statement)
+                    .revealed_messages
+                    .iter()
+                    .map(|(k, _)| k)
+                    .collect();
+                PoKPSSig::init(
+                    &sig,
+                    &self.statement.pk,
+                    &self.statement.params,
+                    &messages,
+                    None,
+                    indices,
+                )
+                .unwrap()
             }
             _ => panic!(""),
         };
@@ -181,20 +190,19 @@ impl ProofModule for PSSigProofModule {
     }
 
     fn verify_proof_contribution(
+        &self,
         challenge: &FieldElement,
-        statement: Statement,
+        //        statement: Statement,
         proof: StatementProof,
     ) -> bool {
-        match (statement, proof) {
-            (
-                Statement::PoKSignaturePS {
-                    pk,
-                    params,
-                    revealed_messages,
-                },
-                StatementProof::SignaturePSProof { proof },
-            ) => proof
-                .verify(&pk, &params, revealed_messages, challenge)
+        match proof {
+            StatementProof::SignaturePSProof { proof } => proof
+                .verify(
+                    &self.statement.pk,
+                    &self.statement.params,
+                    self.statement.revealed_messages,
+                    challenge,
+                )
                 .unwrap(),
             _ => panic!(""),
         }
@@ -203,20 +211,23 @@ impl ProofModule for PSSigProofModule {
 
 pub struct BBSSigProofModule {
     pok_sig: Option<PoKBBSSig>,
-    //statement: Option<Statement::PoKSignatureBBS>,
+    statement: Statement::PoKSignatureBBS,
 }
 
 impl BBSSigProofModule {
-    pub fn new() -> Self {
+    pub fn new(statement: Statement::PoKSignatureBBS) -> Self {
         // Question: Should the statement be stored in ProofModule?
-        Self { pok_sig: None }
+        Self {
+            pok_sig: None,
+            statement,
+        }
     }
 }
 
-impl ProofModule for BBSSigProofModule {
+/*impl ProofModule for BBSSigProofModule {
     fn get_hash_contribution(
         &mut self,
-        statement: Statement,
+//        statement: Statement,
         witness: StatementWitness,
     ) -> Vec<u8> {
         let pok_sig = match (statement, witness) {
@@ -244,8 +255,9 @@ impl ProofModule for BBSSigProofModule {
     }
 
     fn verify_proof_contribution(
+        &self,
         challenge: &FieldElement,
-        statement: Statement,
+//        statement: Statement,
         proof: StatementProof,
     ) -> bool {
         match (statement, proof) {
@@ -259,7 +271,7 @@ impl ProofModule for BBSSigProofModule {
             _ => panic!("Match failed in verify_proof_contribution"),
         }
     }
-}
+}*/
 
 pub fn create_proof(proof_spec: ProofSpec, witness: Witness) -> Proof {
     assert_eq!(
