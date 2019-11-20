@@ -9,10 +9,6 @@ use std::collections::{HashMap, HashSet};
 
 #[derive(Clone)]
 pub enum Statement {
-    /*PoKSignatureBBS {
-        pk: PublicKey,
-        messages: Vec<Vec<u8>>,
-    },*/
     PoKSignatureBBS(PoKSignatureBBS),
     PoKSignaturePS(PoKSignaturePS),
     /*Equality {
@@ -51,29 +47,26 @@ pub struct Witness {
     // TODO: Implement iteration
 }
 
-// TODO: Convert to same structure as `enum Statement`, struct for witness lives outside
 #[derive(Clone)]
 pub enum StatementWitness {
-    //SignatureBBS(SignatureBBSWitness),
-    SignaturePS {
-        sig: PSSig,
-        messages: Vec<FieldElement>,
-    },
-    SignatureBBS {
-        sig: BBSSig,
-        messages: Vec<FieldElement>,
-    },
+    SignaturePS(SignaturePSWitness),
+    SignatureBBS(SignatureBBSWitness),
 }
 
-/*pub struct SignaturePSWitness {
+#[derive(Clone)]
+pub struct SignaturePSWitness {
     sig: PSSig,
-    messages: Vec<FieldElement>
-}*/
+    messages: Vec<FieldElement>,
+}
+
+#[derive(Clone)]
+pub struct SignatureBBSWitness {
+    sig: BBSSig,
+    messages: Vec<FieldElement>,
+}
 
 #[derive(Clone)]
 pub enum StatementProof {
-    //    SignatureBBS(SignatureBBSProof),
-    //SignaturePSProof(SignaturePSProof),
     SignaturePSProof(SignaturePSProof),
     SignatureBBSProof(SignatureBBSProof),
 }
@@ -157,17 +150,17 @@ impl ProofModule for PSSigProofModule {
         witness: StatementWitness,
     ) -> Vec<u8> {
         let pok_sig = match witness {
-            StatementWitness::SignaturePS { sig, messages } => {
+            StatementWitness::SignaturePS(w) => {
                 let indices = (&self.statement)
                     .revealed_messages
                     .iter()
                     .map(|(k, _)| *k)
                     .collect::<HashSet<usize>>();
                 PoKPSSig::init(
-                    &sig,
+                    &w.sig,
                     &self.statement.pk,
                     &self.statement.params,
-                    &messages,
+                    &w.messages,
                     None,
                     indices,
                 )
@@ -177,22 +170,6 @@ impl ProofModule for PSSigProofModule {
         };
         let bytes = pok_sig.to_bytes();
         self.pok_sig = Some(pok_sig);
-        /*match witness {
-            StatementWitness::SignaturePS {
-                sig,
-                messages
-            } => ()
-        }
-        match statement {
-            Statement::PoKSignaturePS {
-                pk: PSVerkey,
-                params: PSParams,
-                revealed_message_indices,
-            } => (),
-        }*/
-        /*self.pok_sig = Some(
-            PoKPSSig::init(sig, vk, params, messages, blindings, revealed_msg_indices).unwrap()
-        );*/
         bytes
     }
 
@@ -246,13 +223,13 @@ impl ProofModule for BBSSigProofModule {
         witness: StatementWitness,
     ) -> Vec<u8> {
         let pok_sig = match witness {
-            StatementWitness::SignatureBBS { sig, messages } => {
+            StatementWitness::SignatureBBS(w) => {
                 let indices = (&self.statement)
                     .revealed_messages
                     .iter()
                     .map(|(k, _)| *k)
                     .collect::<HashSet<usize>>();
-                PoKBBSSig::init(&sig, &self.statement.pk, &messages, None, indices).unwrap()
+                PoKBBSSig::init(&w.sig, &self.statement.pk, &w.messages, None, indices).unwrap()
             }
             _ => panic!("Match failed in get_hash_contribution"),
         };
@@ -301,31 +278,28 @@ pub fn create_proof(proof_spec: ProofSpec, witness: Witness) -> Proof {
     {
         match (stmt, wit) {
             (
-                /*Statement::PoKSignaturePS( PoKSignaturePS {
-                    pk,
-                    params,
-                    revealed_messages,
-                }),*/
                 Statement::PoKSignaturePS(s),
-                StatementWitness::SignaturePS { sig, messages },
+                StatementWitness::SignaturePS(SignaturePSWitness { sig, messages }),
             ) => {
                 let mut pm = PSSigProofModule::new(s);
                 let mut c =
-                    pm.get_hash_contribution(StatementWitness::SignaturePS { sig, messages });
+                    pm.get_hash_contribution(StatementWitness::SignaturePS(SignaturePSWitness {
+                        sig,
+                        messages,
+                    }));
                 comm_bytes.append(&mut c);
                 pms.push(Box::new(pm))
             }
             (
-                /*Statement::PoKSignatureBBS( PoKSignatureBBS {
-                    pk,
-                    revealed_messages,
-                }),*/
                 Statement::PoKSignatureBBS(s),
-                StatementWitness::SignatureBBS { sig, messages },
+                StatementWitness::SignatureBBS(SignatureBBSWitness { sig, messages }),
             ) => {
                 let mut pm = BBSSigProofModule::new(s);
                 let mut c =
-                    pm.get_hash_contribution(StatementWitness::SignatureBBS { sig, messages });
+                    pm.get_hash_contribution(StatementWitness::SignatureBBS(SignatureBBSWitness {
+                        sig,
+                        messages,
+                    }));
                 comm_bytes.append(&mut c);
                 pms.push(Box::new(pm))
             }
@@ -406,10 +380,10 @@ mod tests {
         // Prover's part
         let mut pm_prover = PSSigProofModule::new(stmt.clone());
 
-        let witness = StatementWitness::SignaturePS {
+        let witness = StatementWitness::SignaturePS(SignaturePSWitness {
             sig,
             messages: msgs.iter().map(|f| f.clone()).collect(),
-        };
+        });
 
         let comm_bytes = pm_prover.get_hash_contribution(witness);
         let chal = FieldElement::from_msg_hash(&comm_bytes);
@@ -475,15 +449,15 @@ mod tests {
         let mut pm_ps_prover = PSSigProofModule::new(stmt_ps_sig.clone());
         let mut pm_bbs_prover = BBSSigProofModule::new(stmt_bbs_sig.clone());
 
-        let witness_PS = StatementWitness::SignaturePS {
+        let witness_PS = StatementWitness::SignaturePS(SignaturePSWitness {
             sig: ps_sig,
             messages: msgs_for_PS_sig.iter().map(|f| f.clone()).collect(),
-        };
+        });
 
-        let witness_BBS = StatementWitness::SignatureBBS {
+        let witness_BBS = StatementWitness::SignatureBBS(SignatureBBSWitness {
             sig: bbs_sig,
             messages: msgs_for_BBS_sig.iter().map(|f| f.clone()).collect(),
-        };
+        });
 
         let mut comm_bytes = vec![];
         comm_bytes.append(&mut pm_ps_prover.get_hash_contribution(witness_PS));
@@ -497,17 +471,9 @@ mod tests {
         let pm_ps_verifer = PSSigProofModule::new(stmt_ps_sig.clone());
         let pm_bbs_verifer = BBSSigProofModule::new(stmt_bbs_sig.clone());
 
-        assert!(pm_ps_verifer.verify_proof_contribution(
-            &chal,
-            //            proof_spec.statements[0].clone(),
-            stmt_ps_proof
-        ));
+        assert!(pm_ps_verifer.verify_proof_contribution(&chal, stmt_ps_proof));
 
-        assert!(pm_bbs_verifer.verify_proof_contribution(
-            &chal,
-            //            proof_spec.statements[1].clone(),
-            stmt_bbs_proof
-        ));
+        assert!(pm_bbs_verifer.verify_proof_contribution(&chal, stmt_bbs_proof));
     }
 
     #[test]
@@ -557,18 +523,16 @@ mod tests {
         proof_spec.add_statement(Statement::PoKSignatureBBS(stmt_bbs_sig.clone()));
 
         // Prover's part
-        /*let mut pm_ps_prover = PSSigProofModule::new(stmt_ps_sig.clone());
-        let mut pm_bbs_prover = BBSSigProofModule::new(stmt_bbs_sig.clone());*/
 
-        let witness_PS = StatementWitness::SignaturePS {
+        let witness_PS = StatementWitness::SignaturePS(SignaturePSWitness {
             sig: ps_sig,
             messages: msgs_for_PS_sig.iter().map(|f| f.clone()).collect(),
-        };
+        });
 
-        let witness_BBS = StatementWitness::SignatureBBS {
+        let witness_BBS = StatementWitness::SignatureBBS(SignatureBBSWitness {
             sig: bbs_sig,
             messages: msgs_for_BBS_sig.iter().map(|f| f.clone()).collect(),
-        };
+        });
 
         let proof = create_proof(
             proof_spec.clone(),
@@ -577,32 +541,6 @@ mod tests {
             },
         );
         assert!(verify_proof(proof_spec, proof));
-        /*let mut comm_bytes = vec![];
-        comm_bytes
-            .append(&mut pm_ps_prover.get_hash_contribution(witness_PS));
-        comm_bytes.append(
-            &mut pm_bbs_prover.get_hash_contribution(witness_BBS),
-        );*/
-        //        let chal = FieldElement::from_msg_hash(&comm_bytes);
-
-        //        let stmt_ps_proof = pm_ps_prover.get_proof_contribution(&chal);
-
-        // Verifier' part
-        /*let pm_ps_verifer = PSSigProofModule::new(stmt_ps_sig.clone());
-                let pm_bbs_verifer = BBSSigProofModule::new(stmt_bbs_sig.clone());
-
-                assert!(pm_ps_verifer.verify_proof_contribution(
-                    &chal,
-        //            proof_spec.statements[0].clone(),
-                    stmt_ps_proof
-                ));
-
-                let stmt_bbs_proof = pm_bbs_prover.get_proof_contribution(&chal);
-                assert!(pm_bbs_verifer.verify_proof_contribution(
-                    &chal,
-        //            proof_spec.statements[1].clone(),
-                    stmt_bbs_proof
-                ));*/
     }
 
     #[test]
