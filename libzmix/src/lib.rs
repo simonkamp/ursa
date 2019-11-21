@@ -4,6 +4,7 @@ extern crate amcl_wrapper;
 extern crate failure;
 #[macro_use]
 extern crate serde;
+extern crate serde_json;
 
 #[macro_use]
 pub mod commitments;
