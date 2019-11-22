@@ -449,10 +449,11 @@ pub fn verify_proof(mut proof_spec: ProofSpec, proof: Proof) -> bool {
     assert_eq!(proof_spec.statements.len(), proof.statement_proofs.len());
 
     let mut challenge_bytes = vec![];
-    for (stmt, prf) in proof_spec
+    for (stmt_idx, (stmt, prf)) in proof_spec
         .statements
         .iter()
         .zip(proof.statement_proofs.iter())
+        .enumerate()
     {
         match (stmt, prf) {
             (Statement::PoKSignaturePS(s), StatementProof::SignaturePSProof(p)) => {
@@ -462,8 +463,41 @@ pub fn verify_proof(mut proof_spec: ProofSpec, proof: Proof) -> bool {
                     .map(|k| *k)
                     .collect::<HashSet<usize>>();
 
-                // TODO: Accumulate responses in `responses_for_equalities` and check for equality
-
+                let msg_count = s.msg_count();
+                /*for msg_idx in 0..msg_count {
+                    if revealed_msg_indices.contains(&msg_idx) {
+                        continue;
+                    }
+                    let msg_ref = MessageRef {
+                        statement_idx: stmt_idx,
+                        message_idx: msg_idx,
+                    };
+                    for i in 0..equalities.len() {
+                        if equalities[i].contains(&msg_ref) {
+                            if responses_for_equalities[i].is_none() {
+                                responses_for_equalities[i] =
+                                    Some(p.proof.get_resp_for_message(msg_idx).unwrap())
+                            } else {
+                                let r = p.proof.get_resp_for_message(msg_idx).unwrap();
+                                if Some(r) != responses_for_equalities[i] {
+                                    return false;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }*/
+                let r = check_responses_for_equality(
+                    stmt_idx,
+                    msg_count,
+                    &revealed_msg_indices,
+                    &equalities,
+                    &mut responses_for_equalities,
+                    &prf,
+                );
+                if !r {
+                    return false;
+                }
                 let mut chal_bytes =
                     p.proof
                         .get_bytes_for_challenge(revealed_msg_indices, &s.pk, &s.params);
@@ -475,6 +509,42 @@ pub fn verify_proof(mut proof_spec: ProofSpec, proof: Proof) -> bool {
                     .keys()
                     .map(|k| *k)
                     .collect::<HashSet<usize>>();
+                // TODO: Accumulate responses in `responses_for_equalities` and check for equality
+                let msg_count = s.msg_count();
+                /*for msg_idx in 0..msg_count {
+                    if revealed_msg_indices.contains(&msg_idx) {
+                        continue;
+                    }
+                    let msg_ref = MessageRef {
+                        statement_idx: stmt_idx,
+                        message_idx: msg_idx,
+                    };
+                    for i in 0..equalities.len() {
+                        if equalities[i].contains(&msg_ref) {
+                            if responses_for_equalities[i].is_none() {
+                                responses_for_equalities[i] =
+                                    Some(p.proof.get_resp_for_message(msg_idx).unwrap())
+                            } else {
+                                let r = p.proof.get_resp_for_message(msg_idx).unwrap();
+                                if Some(r) != responses_for_equalities[i] {
+                                    return false;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }*/
+                let r = check_responses_for_equality(
+                    stmt_idx,
+                    msg_count,
+                    &revealed_msg_indices,
+                    &equalities,
+                    &mut responses_for_equalities,
+                    &prf,
+                );
+                if !r {
+                    return false;
+                }
                 let mut chal_bytes = p.proof.get_bytes_for_challenge(revealed_msg_indices, &s.pk);
                 challenge_bytes.append(&mut chal_bytes);
             }
@@ -510,6 +580,7 @@ pub fn verify_proof(mut proof_spec: ProofSpec, proof: Proof) -> bool {
     true
 }
 
+// TODO: This should be remove.
 fn build_equalities_old(equalities: &mut Vec<HashSet<MessageRef>>, stmt: &Statement) {
     match stmt {
         Statement::Equality(m_refs) => equalities.push(m_refs.clone()),
@@ -606,6 +677,47 @@ fn generate_blindings_for_statement(
     }
     assert_eq!(blindings.len(), msg_count - revealed_messages.len());
     blindings
+}
+
+fn check_responses_for_equality(
+    stmt_idx: usize,
+    msg_count: usize,
+    revealed_msg_indices: &HashSet<usize>,
+    equalities: &Vec<HashSet<MessageRef>>,
+    responses_for_equalities: &mut Vec<Option<FieldElement>>,
+    proof: &StatementProof,
+) -> bool {
+    for msg_idx in 0..msg_count {
+        if revealed_msg_indices.contains(&msg_idx) {
+            continue;
+        }
+        let msg_ref = MessageRef {
+            statement_idx: stmt_idx,
+            message_idx: msg_idx,
+        };
+        for i in 0..equalities.len() {
+            if equalities[i].contains(&msg_ref) {
+                let resp = match proof {
+                    StatementProof::SignaturePSProof(p) => {
+                        p.proof.get_resp_for_message(msg_idx).unwrap()
+                    }
+                    StatementProof::SignatureBBSProof(p) => {
+                        p.proof.get_resp_for_message(msg_idx).unwrap()
+                    }
+                    _ => panic!("panic in check_responses_for_equality"),
+                };
+                if responses_for_equalities[i].is_none() {
+                    responses_for_equalities[i] = Some(resp)
+                } else {
+                    if Some(resp) != responses_for_equalities[i] {
+                        return false;
+                    }
+                }
+                break;
+            }
+        }
+    }
+    return true;
 }
 
 #[cfg(test)]
@@ -810,16 +922,21 @@ mod tests {
     fn test_proof_of_two_ps_sigs_from_proof_spec() {}
 
     #[test]
-    fn test_proof_of_equality_of_attr_from_two_ps_sigs_from_proof_spec() {
+    fn test_proof_of_equality_of_attr_from_3_sigs_from_proof_spec() {
         // 3 sigs, PS and BBS+, prove attribute 0 is equal in all 3 signatures,
         // attribute 1 of 1st PS sig is equal to attribute 2 of 2nd PS sig, attribute 2 of 1st PS sig is
         // equal to attribute 3 of BBS+ sig, attribute 4 of 2nd PS sig is equal to attribute 4 of BBS+ sig
         // and attribute 3 and attribute 5 of BBS+ sig are equal
         let params = PSParams::new("test".as_bytes());
 
+        // `common_element` is same in all signatures and is at index 0 in all.
+        let common_element = FieldElement::random();
+
         // PS sig 1
         let count_msgs_1 = 5;
-        let msgs_for_PS_sig_1 = FieldElementVector::random(count_msgs_1);
+        let mut msgs_for_PS_sig_1 = FieldElementVector::random(count_msgs_1 - 1);
+        // attribute 0 is equal in all 3 signatures
+        msgs_for_PS_sig_1.insert(0, common_element.clone());
         let (vk_1, sk_1) = PSKeygen(count_msgs_1, &params);
         let ps_sig_1 = PSSig::new(msgs_for_PS_sig_1.as_slice(), &sk_1, &params).unwrap();
         assert!(ps_sig_1
@@ -828,7 +945,11 @@ mod tests {
 
         // PS sig 2
         let count_msgs_2 = 6;
-        let msgs_for_PS_sig_2 = FieldElementVector::random(count_msgs_2);
+        let mut msgs_for_PS_sig_2 = FieldElementVector::random(count_msgs_2 - 1);
+        // attribute 0 is equal in all 3 signatures
+        msgs_for_PS_sig_2.insert(0, common_element.clone());
+        // attribute 1 of 1st PS sig is equal to attribute 2 of 2nd PS sig
+        msgs_for_PS_sig_2[2] = msgs_for_PS_sig_1[1].clone();
         let (vk_2, sk_2) = PSKeygen(count_msgs_2, &params);
         let ps_sig_2 = PSSig::new(msgs_for_PS_sig_2.as_slice(), &sk_2, &params).unwrap();
         assert!(ps_sig_2
@@ -837,7 +958,9 @@ mod tests {
 
         // BBS+ sig
         let message_count = 7;
-        let msgs_for_BBS_sig = FieldElementVector::random(message_count);
+        let mut msgs_for_BBS_sig = FieldElementVector::random(message_count - 1);
+        // attribute 0 is equal in all 3 signatures
+        msgs_for_BBS_sig.insert(0, common_element.clone());
         let (verkey, signkey) = BBSKeygen(message_count).unwrap();
         let bbs_sig = BBSSig::new(msgs_for_BBS_sig.as_slice(), &signkey, &verkey).unwrap();
         assert!(bbs_sig
@@ -881,6 +1004,20 @@ mod tests {
             message_idx: 0,
         });
         proof_spec.add_statement(Statement::Equality(eq_1));
+
+        // attribute 1 of 1st PS sig is equal to attribute 2 of 2nd PS sig
+        let mut eq_2 = HashSet::new();
+        eq_2.insert(MessageRef {
+            statement_idx: 0,
+            message_idx: 1,
+        });
+        eq_2.insert(MessageRef {
+            statement_idx: 1,
+            message_idx: 2,
+        });
+        proof_spec.add_statement(Statement::Equality(eq_2));
+
+        // TODO: Add more equalities to complete the test
 
         // Prover's part
 
