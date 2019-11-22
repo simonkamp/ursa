@@ -6,6 +6,7 @@ use signatures::bbs::signature::Signature as BBSSig;
 use signatures::ps::keys::{Params as PSParams, Verkey as PSVerkey};
 use signatures::ps::pok_sig::{PoKOfSignature as PoKPSSig, PoKOfSignatureProof as PoKPSSigProof};
 use signatures::ps::signature::Signature as PSSig;
+use std::borrow::BorrowMut;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
@@ -45,7 +46,7 @@ pub enum Statement {
     // Inequality(Vec<Ref>),
     // Pedersen commitments are needed during cred request.
     // PedersenCommitment
-    // SelfAttestedClaim(Vec<u8>)
+    SelfAttestedClaim(Vec<u8>),
 }
 
 #[derive(Clone)]
@@ -336,6 +337,11 @@ pub fn create_proof(mut proof_spec: ProofSpec, witness: Witness) -> Proof {
     for stmt in proof_spec.statements.iter() {
         statements.push(stmt);
     }
+    // TODO: Revealed messages should not be included in equalities.
+    // Sidetrack: If a user is not willing to reveal a certain attribute, the verifier can trick
+    // him to prove its equality with another attribute that he is revealing.
+    // This should be stopped at a higher layer? Or should this code support an option like
+    // `never_reveal`?
     build_equalities_for_attributes(&mut equalities, statements);
     // TODO: Build a better data structure where the messages kept per statement such that checking
     // whether a message is present in an equality or not is easier.
@@ -343,15 +349,26 @@ pub fn create_proof(mut proof_spec: ProofSpec, witness: Witness) -> Proof {
     let blindings_for_equalities = FieldElementVector::random(equalities.len());
 
     // Remove equality statements since they are already processed
-    let mut eq_stmt_indices = vec![];
-    for (i, stmt) in proof_spec.statements.iter().enumerate() {
-        match stmt {
-            Statement::Equality(_) => eq_stmt_indices.push(i),
+    // Also remove self attested claim statements since they will be processed later
+    let mut stmt_indices_to_remove = vec![];
+    // Process self attested claims
+    let mut self_attest_stmt_bytes = vec![];
+    for (i, stmt) in proof_spec.statements.iter_mut().enumerate() {
+        match stmt.borrow_mut() {
+            Statement::Equality(_) => stmt_indices_to_remove.push(i),
+            Statement::SelfAttestedClaim(b) => {
+                // Consuming the bytes inside SelfAttestedClaim as the statement is going to be
+                // removed after this loop.
+                // Question: Is this bad? An alternative would be to clone `b` but `b` can be
+                // arbitrarily large.
+                self_attest_stmt_bytes.append(b);
+                stmt_indices_to_remove.push(i);
+            }
             _ => (),
         }
     }
-    eq_stmt_indices.reverse();
-    for i in eq_stmt_indices {
+    stmt_indices_to_remove.reverse();
+    for i in stmt_indices_to_remove {
         proof_spec.statements.remove(i);
     }
 
@@ -413,6 +430,10 @@ pub fn create_proof(mut proof_spec: ProofSpec, witness: Witness) -> Proof {
             _ => panic!("Match failed in create_proof"),
         }
     }
+
+    // Append self attested claims to challenge. Same idea as Schnorr signature
+    comm_bytes.append(&mut self_attest_stmt_bytes);
+
     let challenge = FieldElement::from_msg_hash(comm_bytes.as_slice());
     let mut statement_proofs: Vec<StatementProof> = vec![];
     for pm in &mut pms {
@@ -434,15 +455,26 @@ pub fn verify_proof(mut proof_spec: ProofSpec, proof: Proof) -> bool {
     let mut responses_for_equalities: Vec<Option<FieldElement>> = vec![None; equalities.len()];
 
     // Remove equality statements since they are already processed
-    let mut eq_stmt_indices = vec![];
-    for (i, stmt) in proof_spec.statements.iter().enumerate() {
-        match stmt {
-            Statement::Equality(_) => eq_stmt_indices.push(i),
+    // Also remove self attested claim statements since they will be processed later
+    let mut stmt_indices_to_remove = vec![];
+    // Process self attested claims
+    let mut self_attest_stmt_bytes = vec![];
+    for (i, stmt) in proof_spec.statements.iter_mut().enumerate() {
+        match stmt.borrow_mut() {
+            Statement::Equality(_) => stmt_indices_to_remove.push(i),
+            Statement::SelfAttestedClaim(b) => {
+                // Consuming the bytes inside SelfAttestedClaim as the statement is going to be
+                // removed after this loop.
+                // Question: Is this bad? An alternative would be to clone `b` but `b` can be
+                // arbitrarily large.
+                self_attest_stmt_bytes.append(b);
+                stmt_indices_to_remove.push(i);
+            }
             _ => (),
         }
     }
-    eq_stmt_indices.reverse();
-    for i in eq_stmt_indices {
+    stmt_indices_to_remove.reverse();
+    for i in stmt_indices_to_remove {
         proof_spec.statements.remove(i);
     }
 
@@ -464,29 +496,6 @@ pub fn verify_proof(mut proof_spec: ProofSpec, proof: Proof) -> bool {
                     .collect::<HashSet<usize>>();
 
                 let msg_count = s.msg_count();
-                /*for msg_idx in 0..msg_count {
-                    if revealed_msg_indices.contains(&msg_idx) {
-                        continue;
-                    }
-                    let msg_ref = MessageRef {
-                        statement_idx: stmt_idx,
-                        message_idx: msg_idx,
-                    };
-                    for i in 0..equalities.len() {
-                        if equalities[i].contains(&msg_ref) {
-                            if responses_for_equalities[i].is_none() {
-                                responses_for_equalities[i] =
-                                    Some(p.proof.get_resp_for_message(msg_idx).unwrap())
-                            } else {
-                                let r = p.proof.get_resp_for_message(msg_idx).unwrap();
-                                if Some(r) != responses_for_equalities[i] {
-                                    return false;
-                                }
-                            }
-                            break;
-                        }
-                    }
-                }*/
                 let r = check_responses_for_equality(
                     stmt_idx,
                     msg_count,
@@ -511,29 +520,6 @@ pub fn verify_proof(mut proof_spec: ProofSpec, proof: Proof) -> bool {
                     .collect::<HashSet<usize>>();
                 // TODO: Accumulate responses in `responses_for_equalities` and check for equality
                 let msg_count = s.msg_count();
-                /*for msg_idx in 0..msg_count {
-                    if revealed_msg_indices.contains(&msg_idx) {
-                        continue;
-                    }
-                    let msg_ref = MessageRef {
-                        statement_idx: stmt_idx,
-                        message_idx: msg_idx,
-                    };
-                    for i in 0..equalities.len() {
-                        if equalities[i].contains(&msg_ref) {
-                            if responses_for_equalities[i].is_none() {
-                                responses_for_equalities[i] =
-                                    Some(p.proof.get_resp_for_message(msg_idx).unwrap())
-                            } else {
-                                let r = p.proof.get_resp_for_message(msg_idx).unwrap();
-                                if Some(r) != responses_for_equalities[i] {
-                                    return false;
-                                }
-                            }
-                            break;
-                        }
-                    }
-                }*/
                 let r = check_responses_for_equality(
                     stmt_idx,
                     msg_count,
@@ -551,6 +537,10 @@ pub fn verify_proof(mut proof_spec: ProofSpec, proof: Proof) -> bool {
             _ => panic!(""),
         }
     }
+
+    // Append self attested claims to challenge. Same idea as Schnorr signature
+    challenge_bytes.append(&mut self_attest_stmt_bytes);
+
     let challenge = FieldElement::from_msg_hash(&challenge_bytes);
     for (stmt, prf) in proof_spec
         .statements
@@ -765,11 +755,6 @@ mod tests {
         // Verifier' part
         let pm_verifer = PSSigProofModule::new(stmt);
         pm_verifer.verify_proof_contribution(&chal, stmt_proof);
-        /*assert!(PSSigProofModule::verify_proof_contribution(
-            &chal,
-            proof_spec.statements[0].clone(),
-            stmt_proof
-        ));*/
     }
 
     #[test]
@@ -926,7 +911,7 @@ mod tests {
         // 3 sigs, PS and BBS+, prove attribute 0 is equal in all 3 signatures,
         // attribute 1 of 1st PS sig is equal to attribute 2 of 2nd PS sig, attribute 2 of 1st PS sig is
         // equal to attribute 3 of BBS+ sig, attribute 4 of 2nd PS sig is equal to attribute 4 of BBS+ sig
-        // and attribute 3 and attribute 5 of BBS+ sig are equal
+        // and attribute 5 and attribute 6 of BBS+ sig are equal
         let params = PSParams::new("test".as_bytes());
 
         // `common_element` is same in all signatures and is at index 0 in all.
@@ -961,6 +946,12 @@ mod tests {
         let mut msgs_for_BBS_sig = FieldElementVector::random(message_count - 1);
         // attribute 0 is equal in all 3 signatures
         msgs_for_BBS_sig.insert(0, common_element.clone());
+        // attribute 2 of 1st PS sig is equal to attribute 3 of BBS+ sig
+        msgs_for_BBS_sig[3] = msgs_for_PS_sig_1[2].clone();
+        // attribute 4 of 2nd PS sig is equal to attribute 4 of BBS+ sig
+        msgs_for_BBS_sig[4] = msgs_for_PS_sig_2[4].clone();
+        // attribute 5 and attribute 6 of BBS+ sig are equal
+        msgs_for_BBS_sig[6] = msgs_for_BBS_sig[5].clone();
         let (verkey, signkey) = BBSKeygen(message_count).unwrap();
         let bbs_sig = BBSSig::new(msgs_for_BBS_sig.as_slice(), &signkey, &verkey).unwrap();
         assert!(bbs_sig
@@ -1017,7 +1008,41 @@ mod tests {
         });
         proof_spec.add_statement(Statement::Equality(eq_2));
 
-        // TODO: Add more equalities to complete the test
+        // attribute 2 of 1st PS sig is equal to attribute 3 of BBS+ sig
+        let mut eq_3 = HashSet::new();
+        eq_3.insert(MessageRef {
+            statement_idx: 0,
+            message_idx: 2,
+        });
+        eq_3.insert(MessageRef {
+            statement_idx: 2,
+            message_idx: 3,
+        });
+        proof_spec.add_statement(Statement::Equality(eq_3));
+
+        // attribute 4 of 2nd PS sig is equal to attribute 4 of BBS+ sig
+        let mut eq_4 = HashSet::new();
+        eq_4.insert(MessageRef {
+            statement_idx: 1,
+            message_idx: 4,
+        });
+        eq_4.insert(MessageRef {
+            statement_idx: 2,
+            message_idx: 4,
+        });
+        proof_spec.add_statement(Statement::Equality(eq_4));
+
+        // attribute 5 and attribute 6 of BBS+ sig are equal
+        let mut eq_5 = HashSet::new();
+        eq_5.insert(MessageRef {
+            statement_idx: 2,
+            message_idx: 5,
+        });
+        eq_5.insert(MessageRef {
+            statement_idx: 2,
+            message_idx: 6,
+        });
+        proof_spec.add_statement(Statement::Equality(eq_5));
 
         // Prover's part
 
@@ -1055,6 +1080,81 @@ mod tests {
     #[test]
     fn test_proof_of_equality_of_attr_in_2_sigs_when_3_ps_sigs_from_proof_spec() {
         // 3 PS sig, prove an attribute is equal in specific 2 sigs
+    }
+
+    #[test]
+    fn test_self_attested_claims_with_2_PS_sigs() {
+        // 2 PS sigs and 3 self attested claims
+        let params = PSParams::new("test".as_bytes());
+
+        // 1st PS sig
+        let count_msgs_1 = 3;
+        let msgs_for_PS_sig_1 = FieldElementVector::random(count_msgs_1);
+        let (vk_1, sk_1) = PSKeygen(count_msgs_1, &params);
+        let ps_sig_1 = PSSig::new(msgs_for_PS_sig_1.as_slice(), &sk_1, &params).unwrap();
+        assert!(ps_sig_1
+            .verify(msgs_for_PS_sig_1.as_slice(), &vk_1, &params)
+            .unwrap());
+
+        // 2nd PS sig
+        let count_msgs_2 = 4;
+        let msgs_for_PS_sig_2 = FieldElementVector::random(count_msgs_2);
+        let (vk_2, sk_2) = PSKeygen(count_msgs_2, &params);
+        let ps_sig_2 = PSSig::new(msgs_for_PS_sig_2.as_slice(), &sk_2, &params).unwrap();
+        assert!(ps_sig_2
+            .verify(msgs_for_PS_sig_2.as_slice(), &vk_2, &params)
+            .unwrap());
+
+        let stmt_ps_sig_1 = PoKSignaturePS {
+            pk: vk_1.clone(),
+            params: params.clone(),
+            revealed_messages: HashMap::new(),
+        };
+
+        let stmt_ps_sig_2 = PoKSignaturePS {
+            pk: vk_2.clone(),
+            params: params.clone(),
+            revealed_messages: HashMap::new(),
+        };
+
+        let mut proof_spec = ProofSpec::new();
+        proof_spec.add_statement(Statement::PoKSignaturePS(stmt_ps_sig_1.clone()));
+
+        // 1st self attested claim
+        let claim_1 = "My IP is 55.60.72.98";
+        proof_spec.add_statement(Statement::SelfAttestedClaim(claim_1.as_bytes().to_vec()));
+
+        proof_spec.add_statement(Statement::PoKSignaturePS(stmt_ps_sig_2.clone()));
+
+        // 2nd self attested claim
+        let claim_2 = "Don't use my proof to buy ammo";
+        proof_spec.add_statement(Statement::SelfAttestedClaim(claim_2.as_bytes().to_vec()));
+
+        // 3rd self attested claim
+        let claim_3 = "My fav color is black";
+        proof_spec.add_statement(Statement::SelfAttestedClaim(claim_3.as_bytes().to_vec()));
+
+        // Prover's part
+
+        let witness_PS_1 = StatementWitness::SignaturePS(SignaturePSWitness {
+            sig: ps_sig_1,
+            messages: msgs_for_PS_sig_1.iter().map(|f| f.clone()).collect(),
+        });
+
+        let witness_PS_2 = StatementWitness::SignaturePS(SignaturePSWitness {
+            sig: ps_sig_2,
+            messages: msgs_for_PS_sig_2.iter().map(|f| f.clone()).collect(),
+        });
+
+        let proof = create_proof(
+            proof_spec.clone(),
+            Witness {
+                statement_witnesses: vec![witness_PS_1, witness_PS_2],
+            },
+        );
+
+        // Verifier's part
+        assert!(verify_proof(proof_spec, proof));
     }
 
     #[test]
