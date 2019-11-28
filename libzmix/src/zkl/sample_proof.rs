@@ -10,12 +10,11 @@ use bulletproofs::r1cs::Prover as BulletproofsProver;
 use bulletproofs::r1cs::R1CSProof;
 use bulletproofs::r1cs::Verifier as BulletproofsVerifier;
 use bulletproofs::transcript::TranscriptProtocol;
-use failure::_core::ptr::eq;
+use signatures::bbs::keys::PublicKey as BBSVerkey;
 use merlin::Transcript;
 use rand::prelude::ThreadRng;
 use rand::rngs::OsRng;
 use rand::{CryptoRng, Rng};
-use signatures::bbs::keys::PublicKey as BBSVerkey;
 use signatures::bbs::pok_sig::{PoKOfSignature as PoKBBSSig, PoKOfSignatureProof as PoKBBSigProof};
 use signatures::bbs::signature::Signature as BBSSig;
 use signatures::ps::keys::{Params as PSParams, Verkey as PSVerkey};
@@ -1018,6 +1017,7 @@ fn update_bp_witnesses(
             );
         }
     }
+    true
 }
 
 /// Merge equalities of various statements such that the final array of equality sets are disjoint.
