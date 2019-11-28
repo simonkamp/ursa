@@ -199,6 +199,23 @@ impl PoKOfSignatureProof {
         bytes
     }
 
+    /// Get the response from post-challenge phase of the Sigma protocol for the given message index `msg_idx`.
+    /// Used when comparing message equality
+    pub fn get_resp_for_message(&self, msg_idx: usize) -> Result<FieldElement, BBSError> {
+        // 2 elements in self.proof_vc_2.responses are reserved for `&signature.e` and `r2`
+        if msg_idx >= (self.proof_vc_2.responses.len() - 2) {
+            return Err(BBSError::from_kind(BBSErrorKind::GeneralError {
+                msg: format!(
+                    "Message index was given {} but should be less than {}",
+                    msg_idx,
+                    self.proof_vc_2.responses.len() - 2
+                ),
+            }));
+        }
+        // 2 added to the index, since 0th and 1st index are reserved for `&signature.e` and `r2`
+        Ok(self.proof_vc_2.responses[2 + msg_idx].clone())
+    }
+
     pub fn verify(
         &self,
         vk: &PublicKey,

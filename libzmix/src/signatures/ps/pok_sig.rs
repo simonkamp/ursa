@@ -178,6 +178,24 @@ impl PoKOfSignatureProof {
         bytes
     }
 
+    /// Get the response from post-challenge phase of the Sigma protocol for the given message index `msg_idx`.
+    /// Used when comparing message equality
+    pub fn get_resp_for_message(&self, msg_idx: usize) -> Result<FieldElement, PSError> {
+        // 1 element in self.proof_vc.responses is reserved for the random `t`
+        if msg_idx >= (self.proof_vc.responses.len() - 1) {
+            return Err(PSErrorKind::GeneralError {
+                msg: format!(
+                    "Message index was given {} but should be less than {}",
+                    msg_idx,
+                    self.proof_vc.responses.len() - 1
+                ),
+            }
+            .into());
+        }
+        // 1 added to the index, since 0th index is reserved for randomization (`t`)
+        Ok(self.proof_vc.responses[1 + msg_idx].clone())
+    }
+
     /// Verifies the proof. The verifier should generate the challenge on its own.
     pub fn verify(
         &self,

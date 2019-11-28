@@ -11,6 +11,7 @@ use amcl_wrapper::group_elem::GroupElement;
 use amcl_wrapper::group_elem_g1::G1;
 use amcl_wrapper::types::{BigNum, DoubleBigNum};
 
+/// TODO: Remove
 pub fn get_generators(prefix: &str, n: usize) -> Vec<G1> {
     let mut gens: Vec<G1> = Vec::with_capacity(n);
     for i in 1..n + 1 {

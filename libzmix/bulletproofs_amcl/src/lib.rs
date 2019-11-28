@@ -22,7 +22,7 @@ pub mod errors;
 #[macro_use]
 pub mod utils;
 
-mod transcript;
+pub mod transcript;
 
 pub mod ipp;
 

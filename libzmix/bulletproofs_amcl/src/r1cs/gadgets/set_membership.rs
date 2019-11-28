@@ -6,9 +6,7 @@ use amcl_wrapper::group_elem_g1::{G1Vector, G1};
 use merlin::Transcript;
 use rand::{CryptoRng, Rng};
 
-/* This constraint system has linear (in set size) cost and should only be used for small, static
-sets.
-*/
+// This constraint system has linear (in set size) cost and should only be used for small sets.
 
 /// Constraints for set membership check
 /// Create a new set with values being difference between the set value at that index and the value being proved a member.

@@ -6,6 +6,10 @@ extern crate failure;
 extern crate serde;
 extern crate serde_json;
 
+extern crate bulletproofs_amcl as bulletproofs;
+extern crate merlin;
+extern crate rand;
+
 #[macro_use]
 pub mod commitments;
 pub mod errors;

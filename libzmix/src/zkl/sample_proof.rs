@@ -1,5 +1,12 @@
 use amcl_wrapper::field_elem::{FieldElement, FieldElementVector};
+use amcl_wrapper::group_elem_g1::G1;
+use bulletproofs::r1cs::gadgets::bound_check::{prove_bounded_num, verify_bounded_num};
+use bulletproofs::r1cs::Generators as BulletproofsGens;
+use bulletproofs::r1cs::Prover as BulletproofsProver;
+use bulletproofs::r1cs::R1CSProof;
+use bulletproofs::r1cs::Verifier as BulletproofsVerifier;
 use failure::_core::ptr::eq;
+use merlin::Transcript;
 use signatures::bbs::keys::PublicKey as BBSVerkey;
 use signatures::bbs::pok_sig::{PoKOfSignature as PoKBBSSig, PoKOfSignatureProof as PoKBBSigProof};
 use signatures::bbs::signature::Signature as BBSSig;
@@ -10,9 +17,10 @@ use std::borrow::BorrowMut;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
-// TODO: Convert panic to error handling
+// TODO: Convert panics and asserts to error handling
 
-/// MessageRef refers to a message inside an statement. `MessageRef` is used in statements for predicates,
+/// MessageRef refers to a message inside an statement. A statement can contain or refer to an array
+/// of messages. `MessageRef` is used in statements for predicates,
 /// like equality, inequality, range, set-membership, non-membership.
 #[derive(Clone, Eq)]
 pub struct MessageRef {
@@ -37,18 +45,27 @@ impl PartialEq for MessageRef {
     }
 }
 
+// TODO: Differentiate between statements requiring witness and not requiring witness.
+// The latter are usually relying on the former, like statements proving various predicates on
+// witnesses of former kind of statements.
 #[derive(Clone)]
 pub enum Statement {
+    //pub enum Statement<'a> {
     PoKSignatureBBS(PoKSignatureBBS),
     PoKSignaturePS(PoKSignaturePS),
     Equality(HashSet<MessageRef>),
+    SelfAttestedClaim(Vec<u8>),
+    // Range proof over a message from a PS or a BBS sig using Bulletproofs. The range is public.
+    RangeProofBulletproof(RangeProofBulletproof),
+    //RangeProofPSBulletproof(RangeProofPSBulletproof<'a>),
     // Input validation needed to ensure no conflicts between equality and inequality
     // Inequality(Vec<Ref>),
     // Pedersen commitments are needed during cred request.
     // PedersenCommitment
-    SelfAttestedClaim(Vec<u8>),
 }
 
+// Question: The verifier might not care to specify the message values for `revealed_messages`. If
+// thats true, change `HashMap<usize, FieldElement>` to `HashMap<usize, Option<FieldElement>>`
 #[derive(Clone)]
 pub struct PoKSignatureBBS {
     pk: BBSVerkey,
@@ -62,6 +79,21 @@ pub struct PoKSignaturePS {
     params: PSParams,
     // Messages being revealed.
     revealed_messages: HashMap<usize, FieldElement>,
+}
+
+// Range proof over a message from a PS or a BBS sig. The range is public.
+// One approach is, not including Bulletproof generators since and keep only 1 Bulletproof prover/verifier
+// per Proof so there will be only 1 set of generators for all statements using Bulletproofs.
+// This seems practical but don't know.
+#[derive(Clone)]
+pub struct RangeProofBulletproof {
+    //pub struct RangeProofPSBulletproof<'a> {
+    message_ref: MessageRef,
+    min: u64,
+    max: u64,
+    // TODO: Ensure `max_bits_in_val` is appropriate
+    max_bits_in_val: usize,
+    //gens: &'a BulletproofsGens
 }
 
 trait PoKSignature {
@@ -80,16 +112,21 @@ impl PoKSignature for PoKSignaturePS {
     }
 }
 
+/*#[derive(Clone)]
+pub struct ProofSpec<'a> {
+    pub statements: Vec<Statement<'a>>,
+    // TODO: Implement iteration
+}*/
+
 #[derive(Clone)]
 pub struct ProofSpec {
-    //message_count: usize,
     pub statements: Vec<Statement>,
     // TODO: Implement iteration
 }
 
 #[derive(Clone)]
 pub struct Witness {
-    pub statement_witnesses: Vec<StatementWitness>,
+    pub statement_witnesses: HashMap<usize, StatementWitness>,
     // TODO: Implement iteration
 }
 
@@ -103,31 +140,52 @@ pub enum StatementWitness {
 pub struct SignaturePSWitness {
     sig: PSSig,
     messages: Vec<FieldElement>,
-    //    blindings: Option<Vec<FieldElement>>
 }
 
 #[derive(Clone)]
 pub struct SignatureBBSWitness {
     sig: BBSSig,
     messages: Vec<FieldElement>,
-    //    blindings: Option<Vec<FieldElement>>
 }
 
 #[derive(Clone)]
 pub enum StatementProof {
     SignaturePSProof(SignaturePSProof),
     SignatureBBSProof(SignatureBBSProof),
+    BulletproofsProof(BulletproofsProof),
 }
 
 #[derive(Clone)]
 pub struct SignaturePSProof {
+    pub statement_idx: usize,
     pub proof: PoKPSSigProof,
 }
 
 #[derive(Clone)]
 pub struct SignatureBBSProof {
+    pub statement_idx: usize,
     pub proof: PoKBBSigProof,
 }
+
+/// For all bulletproof statements, there is a single proof but commitments corresponding to each statement
+#[derive(Clone)]
+pub struct BulletproofsProof {
+    // Map of statement index -> commitments
+    pub statement_commitments: HashMap<usize, Vec<G1>>,
+    pub proof: R1CSProof,
+}
+
+/*impl<'a> ProofSpec<'a> {
+    pub fn new() -> Self {
+        Self {
+            statements: Vec::<Statement>::new(),
+        }
+    }
+
+    pub fn add_statement(&mut self, statement: Statement<'a>) {
+        self.statements.push(statement)
+    }
+}*/
 
 // TODO: Follow the Builder pattern like ProofSpecBuilder, add_clause, etc
 impl ProofSpec {
@@ -137,13 +195,16 @@ impl ProofSpec {
         }
     }
 
+    // TODO: Maybe each statement should have an associated unique id which can be a counter
+    // so that referencing statements in the proving/verifying code is easy
     pub fn add_statement(&mut self, statement: Statement) {
         self.statements.push(statement)
     }
 }
 
 pub struct Proof {
-    //    pub challenge: FieldElement,
+    // Keeping statement_proofs a vector and not a map of statement index -> Proof since several
+    // statements can have a single proof, like in case of bulletproofs
     pub statement_proofs: Vec<StatementProof>,
 }
 
@@ -152,8 +213,6 @@ pub trait ProofModule {
     fn get_hash_contribution(
         &mut self,
         witness: StatementWitness,
-        // TODO: Come back to blindings
-        //blindings: Vec<FieldElement>,
         // TODO: Accepts errors too
         //) -> Result<Vec<u8>, ZkLangError>;?
     ) -> Vec<u8>;
@@ -172,22 +231,48 @@ pub trait ProofModule {
     ) -> bool;
 }
 
-pub struct PSSigProofModule {
-    pok_sig: Option<PoKPSSig>,
+pub struct BBSSigProofModule {
+    pok_sig: Option<PoKBBSSig>,
     // TODO: Should this be separated into 2 structs, one for prover, one for verifier?
     pub blindings: Option<Vec<FieldElement>>,
-    statement: PoKSignaturePS,
+    statement_idx: usize,
+    statement: PoKSignatureBBS,
 }
 
-impl PSSigProofModule {
-    pub fn new(statement: PoKSignaturePS) -> Self {
+impl BBSSigProofModule {
+    pub fn new(statement_idx: usize, statement: PoKSignatureBBS) -> Self {
+        // Question: Should the statement be stored in ProofModule?
         Self {
             pok_sig: None,
             blindings: None,
+            statement_idx,
             statement,
         }
     }
 }
+
+pub struct PSSigProofModule {
+    pok_sig: Option<PoKPSSig>,
+    // TODO: Should this be separated into 2 structs, one for prover, one for verifier?
+    pub blindings: Option<Vec<FieldElement>>,
+    statement_idx: usize,
+    statement: PoKSignaturePS,
+}
+
+impl PSSigProofModule {
+    pub fn new(statement_idx: usize, statement: PoKSignaturePS) -> Self {
+        Self {
+            pok_sig: None,
+            blindings: None,
+            statement_idx,
+            statement,
+        }
+    }
+}
+
+/*pub struct BulletproofsProofModule<'a> {
+    gens: &'a BulletproofsGens
+}*/
 
 impl ProofModule for PSSigProofModule {
     fn get_hash_contribution(&mut self, witness: StatementWitness) -> Vec<u8> {
@@ -198,10 +283,6 @@ impl ProofModule for PSSigProofModule {
                     .iter()
                     .map(|(k, _)| *k)
                     .collect::<HashSet<usize>>();
-                /*let blindings = match &w.blindings {
-                    Some(b) => Some(b.as_slice()),
-                    None => None
-                };*/
                 let blindings = self.blindings.as_ref().map(|v| v.as_slice());
                 PoKPSSig::init(
                     &w.sig,
@@ -209,7 +290,6 @@ impl ProofModule for PSSigProofModule {
                     &self.statement.params,
                     &w.messages,
                     blindings,
-                    //                    None,
                     indices,
                 )
                 .unwrap()
@@ -225,15 +305,13 @@ impl ProofModule for PSSigProofModule {
         // TODO: Is there a better way?
         let pok_sig = self.pok_sig.take().unwrap();
         let proof = pok_sig.gen_proof(&challenge).unwrap();
-        StatementProof::SignaturePSProof(SignaturePSProof { proof })
+        StatementProof::SignaturePSProof(SignaturePSProof {
+            statement_idx: self.statement_idx,
+            proof,
+        })
     }
 
-    fn verify_proof_contribution(
-        &self,
-        challenge: &FieldElement,
-        //        statement: Statement,
-        proof: StatementProof,
-    ) -> bool {
+    fn verify_proof_contribution(&self, challenge: &FieldElement, proof: StatementProof) -> bool {
         match proof {
             StatementProof::SignaturePSProof(proof) => proof
                 .proof
@@ -249,30 +327,8 @@ impl ProofModule for PSSigProofModule {
     }
 }
 
-pub struct BBSSigProofModule {
-    pok_sig: Option<PoKBBSSig>,
-    // TODO: Should this be separated into 2 structs, one for prover, one for verifier?
-    pub blindings: Option<Vec<FieldElement>>,
-    statement: PoKSignatureBBS,
-}
-
-impl BBSSigProofModule {
-    pub fn new(statement: PoKSignatureBBS) -> Self {
-        // Question: Should the statement be stored in ProofModule?
-        Self {
-            pok_sig: None,
-            blindings: None,
-            statement,
-        }
-    }
-}
-
 impl ProofModule for BBSSigProofModule {
-    fn get_hash_contribution(
-        &mut self,
-        //        statement: Statement,
-        witness: StatementWitness,
-    ) -> Vec<u8> {
+    fn get_hash_contribution(&mut self, witness: StatementWitness) -> Vec<u8> {
         let pok_sig = match witness {
             StatementWitness::SignatureBBS(w) => {
                 let indices = (&self.statement)
@@ -280,20 +336,9 @@ impl ProofModule for BBSSigProofModule {
                     .iter()
                     .map(|(k, _)| *k)
                     .collect::<HashSet<usize>>();
-                /*let blindings = match &w.blindings {
-                  Some(b) => Some(b.as_slice()),
-                    None => None
-                };*/
                 let blindings = self.blindings.as_ref().map(|v| v.as_slice());
-                PoKBBSSig::init(
-                    &w.sig,
-                    &self.statement.pk,
-                    &w.messages,
-                    blindings,
-                    //                    None,
-                    indices,
-                )
-                .unwrap()
+                PoKBBSSig::init(&w.sig, &self.statement.pk, &w.messages, blindings, indices)
+                    .unwrap()
             }
             _ => panic!("Match failed in get_hash_contribution"),
         };
@@ -306,17 +351,18 @@ impl ProofModule for BBSSigProofModule {
         // TODO: Is there a better way?
         let pok_sig = self.pok_sig.take().unwrap();
         let proof = pok_sig.gen_proof(&challenge).unwrap();
-        StatementProof::SignatureBBSProof(SignatureBBSProof { proof })
+        StatementProof::SignatureBBSProof(SignatureBBSProof {
+            statement_idx: self.statement_idx,
+            proof,
+        })
     }
 
-    fn verify_proof_contribution(
-        &self,
-        challenge: &FieldElement,
-        //        statement: Statement,
-        proof: StatementProof,
-    ) -> bool {
+    fn verify_proof_contribution(&self, challenge: &FieldElement, proof: StatementProof) -> bool {
         match proof {
-            StatementProof::SignatureBBSProof(SignatureBBSProof { proof }) => proof
+            StatementProof::SignatureBBSProof(SignatureBBSProof {
+                statement_idx,
+                proof,
+            }) => proof
                 .verify(
                     &self.statement.pk,
                     self.statement.revealed_messages.clone(),
@@ -328,9 +374,31 @@ impl ProofModule for BBSSigProofModule {
     }
 }
 
-pub fn create_proof(mut proof_spec: ProofSpec, witness: Witness) -> Proof {
+struct RangeProofBPStmt {
+    pub min: u64,
+    pub max: u64,
+    pub max_bits_in_val: usize,
+}
+
+struct RangeProofBPWitness {
+    pub val: u64,
+    pub blinding: FieldElement,
+}
+
+use bulletproofs::transcript::TranscriptProtocol;
+use rand::prelude::ThreadRng;
+use rand::rngs::OsRng;
+use rand::{CryptoRng, Rng};
+
+pub fn create_proof<R: Rng + CryptoRng>(
+    mut proof_spec: ProofSpec,
+    mut witness: Witness,
+    label: &'static [u8],
+) -> Proof {
     let mut pms: Vec<Box<dyn ProofModule>> = vec![];
+
     let mut comm_bytes = vec![];
+
     // Iterate over statements and check whether refs in equality are valid?
     let mut equalities = Vec::<HashSet<MessageRef>>::new();
     let mut statements = vec![];
@@ -348,11 +416,26 @@ pub fn create_proof(mut proof_spec: ProofSpec, witness: Witness) -> Proof {
     // Choose same blinding for all equal messages
     let blindings_for_equalities = FieldElementVector::random(equalities.len());
 
+    // Bulletproof statements
+    // XXX: What if a Bulletproof statement needed referenced several statement
+    //    let mut range_proof_bp_stmts = HashMap::new();
+    // BP statement id -> BP witness
+    let mut range_proof_bp_wit = HashMap::new();
+
+    // Vec<(statement index, BP statement, BP witness)>
+    let mut range_proof_bp = vec![];
+
+    // Blindings for bulletproofs
+    // Change to bp_refs and HashSet
+    let mut bp_refs = HashMap::<MessageRef, usize>::new();
+
     // Remove equality statements since they are already processed
     // Also remove self attested claim statements since they will be processed later
     let mut stmt_indices_to_remove = vec![];
     // Process self attested claims
     let mut self_attest_stmt_bytes = vec![];
+    // Indices of Bulletproof statements
+    //let mut bp_stmt_indices = HashSet::new();
     for (i, stmt) in proof_spec.statements.iter_mut().enumerate() {
         match stmt.borrow_mut() {
             Statement::Equality(_) => stmt_indices_to_remove.push(i),
@@ -364,29 +447,17 @@ pub fn create_proof(mut proof_spec: ProofSpec, witness: Witness) -> Proof {
                 self_attest_stmt_bytes.append(b);
                 stmt_indices_to_remove.push(i);
             }
+            Statement::RangeProofBulletproof(rp) => {
+                bp_refs.insert(rp.message_ref.clone(), i);
+                //bp_stmt_indices.insert(i);
+            }
             _ => (),
         }
     }
-    stmt_indices_to_remove.reverse();
-    for i in stmt_indices_to_remove {
-        proof_spec.statements.remove(i);
-    }
 
-    assert_eq!(
-        proof_spec.statements.len(),
-        witness.statement_witnesses.len()
-    );
-    for (stmt_idx, (stmt, wit)) in proof_spec
-        .statements
-        .into_iter()
-        .zip(witness.statement_witnesses.into_iter())
-        .enumerate()
-    {
-        match (stmt, wit) {
-            (
-                Statement::PoKSignaturePS(s),
-                StatementWitness::SignaturePS(SignaturePSWitness { sig, messages }),
-            ) => {
+    for (stmt_idx, stmt) in proof_spec.statements.into_iter().enumerate() {
+        match stmt {
+            Statement::PoKSignaturePS(s) => {
                 let msg_count = s.msg_count();
                 let blindings = generate_blindings_for_statement(
                     stmt_idx,
@@ -395,20 +466,43 @@ pub fn create_proof(mut proof_spec: ProofSpec, witness: Witness) -> Proof {
                     &equalities,
                     &blindings_for_equalities,
                 );
-                let mut pm = PSSigProofModule::new(s);
-                pm.blindings = Some(blindings);
-                let mut c =
-                    pm.get_hash_contribution(StatementWitness::SignaturePS(SignaturePSWitness {
-                        sig,
-                        messages,
-                    }));
-                comm_bytes.append(&mut c);
-                pms.push(Box::new(pm))
+
+                assert!(witness.statement_witnesses.contains_key(&stmt_idx));
+                let w = witness.statement_witnesses.remove(&stmt_idx).unwrap();
+                match w {
+                    StatementWitness::SignaturePS(SignaturePSWitness { sig, messages }) => {
+                        for i in 0..msg_count {
+                            if s.revealed_messages.contains_key(&i) {
+                                continue;
+                            }
+                            let msg_ref = MessageRef {
+                                statement_idx: stmt_idx,
+                                message_idx: i,
+                            };
+                            if bp_refs.contains_key(&msg_ref) {
+                                // TODO: Add a to_u64 in FieldElement
+                                let val = messages[i].to_bignum().w[0] as u64;
+                                range_proof_bp_wit.insert(
+                                    bp_refs[&msg_ref],
+                                    RangeProofBPWitness {
+                                        val,
+                                        blinding: blindings[i].clone(),
+                                    },
+                                );
+                            }
+                        }
+                        let mut pm = PSSigProofModule::new(stmt_idx, s);
+                        pm.blindings = Some(blindings);
+                        let mut c = pm.get_hash_contribution(StatementWitness::SignaturePS(
+                            SignaturePSWitness { sig, messages },
+                        ));
+                        comm_bytes.append(&mut c);
+                        pms.push(Box::new(pm))
+                    }
+                    _ => panic!("Witness not for PS"),
+                }
             }
-            (
-                Statement::PoKSignatureBBS(s),
-                StatementWitness::SignatureBBS(SignatureBBSWitness { sig, messages }),
-            ) => {
+            Statement::PoKSignatureBBS(s) => {
                 let msg_count = s.msg_count();
                 let blindings = generate_blindings_for_statement(
                     stmt_idx,
@@ -417,33 +511,112 @@ pub fn create_proof(mut proof_spec: ProofSpec, witness: Witness) -> Proof {
                     &equalities,
                     &blindings_for_equalities,
                 );
-                let mut pm = BBSSigProofModule::new(s);
-                pm.blindings = Some(blindings);
-                let mut c =
-                    pm.get_hash_contribution(StatementWitness::SignatureBBS(SignatureBBSWitness {
-                        sig,
-                        messages,
-                    }));
-                comm_bytes.append(&mut c);
-                pms.push(Box::new(pm))
+                assert!(witness.statement_witnesses.contains_key(&stmt_idx));
+                let w = witness.statement_witnesses.remove(&stmt_idx).unwrap();
+                match w {
+                    StatementWitness::SignatureBBS(SignatureBBSWitness { sig, messages }) => {
+                        for i in 0..msg_count {
+                            if s.revealed_messages.contains_key(&i) {
+                                continue;
+                            }
+                            let msg_ref = MessageRef {
+                                statement_idx: stmt_idx,
+                                message_idx: i,
+                            };
+                            if bp_refs.contains_key(&msg_ref) {
+                                // TODO: Add a to_u64 in FieldElement
+                                let val = messages[i].to_bignum().w[0] as u64;
+                                range_proof_bp_wit.insert(
+                                    bp_refs[&msg_ref],
+                                    RangeProofBPWitness {
+                                        val,
+                                        blinding: blindings[i].clone(),
+                                    },
+                                );
+                            }
+                        }
+                        let mut pm = BBSSigProofModule::new(stmt_idx, s);
+                        pm.blindings = Some(blindings);
+                        let mut c = pm.get_hash_contribution(StatementWitness::SignatureBBS(
+                            SignatureBBSWitness { sig, messages },
+                        ));
+                        comm_bytes.append(&mut c);
+                        pms.push(Box::new(pm))
+                    }
+                    _ => panic!("Witness not for BBS+ sig"),
+                }
             }
-            _ => panic!("Match failed in create_proof"),
+            Statement::RangeProofBulletproof(rp) => {
+                range_proof_bp.push((
+                    stmt_idx,
+                    RangeProofBPStmt {
+                        min: rp.min,
+                        max: rp.max,
+                        max_bits_in_val: rp.max_bits_in_val,
+                    },
+                    range_proof_bp_wit.remove(&stmt_idx).unwrap(),
+                ));
+            }
+            _ => (),
         }
     }
 
     // Append self attested claims to challenge. Same idea as Schnorr signature
     comm_bytes.append(&mut self_attest_stmt_bytes);
 
-    let challenge = FieldElement::from_msg_hash(comm_bytes.as_slice());
+    let (challenge, bp_proof) = if bp_refs.len() > 0 {
+        // XXX: Will have just 1 prover for now.
+        let mut transcript = Transcript::new(label);
+        transcript.append_message("seeding".as_bytes(), comm_bytes.as_slice());
+        // TODO: Fix number of generators, this should be flexible
+        // TODO: The label can be different and should probably be fixed for all proofs
+        // TODO: Allow those generators to be passed as argument to proof creation since they will
+        // be generated once and stored.
+        let gens = BulletproofsGens::new(label, 512);
+        let (statement_commitments, proof) = {
+            let mut prover = BulletproofsProver::new(&gens.g, &gens.h, &mut transcript);
+            let mut commitments = HashMap::new();
+            for (stmt_idx, stmt, wit) in range_proof_bp {
+                // TODO: Avoid these clonings
+                let comms: Vec<G1> = prove_bounded_num::<R>(
+                    wit.val.clone(),
+                    Some(wit.blinding.clone()),
+                    stmt.min,
+                    stmt.max,
+                    stmt.max_bits_in_val,
+                    None,
+                    &mut prover,
+                )
+                .unwrap();
+                commitments.insert(stmt_idx, comms);
+            }
+            let proof = prover.prove(&gens.G, &gens.H).unwrap();
+            (commitments, proof)
+        };
+        (
+            transcript.challenge_scalar("final challenge".as_bytes()),
+            Some(BulletproofsProof {
+                statement_commitments,
+                proof,
+            }),
+        )
+    } else {
+        (FieldElement::from_msg_hash(comm_bytes.as_slice()), None)
+    };
     let mut statement_proofs: Vec<StatementProof> = vec![];
     for pm in &mut pms {
         let sp = pm.get_proof_contribution(&challenge);
         statement_proofs.push(sp)
     }
+    if bp_proof.is_some() {
+        // TODO: Prove that bulletproof commits to same values
+        statement_proofs.push(StatementProof::BulletproofsProof(bp_proof.unwrap()));
+    }
+
     Proof { statement_proofs }
 }
 
-pub fn verify_proof(mut proof_spec: ProofSpec, proof: Proof) -> bool {
+pub fn verify_proof(mut proof_spec: ProofSpec, mut proof: Proof, label: &'static [u8]) -> bool {
     // Iterate over statements and check whether refs in equality are valid?
     let mut equalities = Vec::<HashSet<MessageRef>>::new();
     let mut statements = vec![];
@@ -473,22 +646,14 @@ pub fn verify_proof(mut proof_spec: ProofSpec, proof: Proof) -> bool {
             _ => (),
         }
     }
-    stmt_indices_to_remove.reverse();
-    for i in stmt_indices_to_remove {
-        proof_spec.statements.remove(i);
-    }
-
-    assert_eq!(proof_spec.statements.len(), proof.statement_proofs.len());
 
     let mut challenge_bytes = vec![];
-    for (stmt_idx, (stmt, prf)) in proof_spec
-        .statements
-        .iter()
-        .zip(proof.statement_proofs.iter())
-        .enumerate()
-    {
-        match (stmt, prf) {
-            (Statement::PoKSignaturePS(s), StatementProof::SignaturePSProof(p)) => {
+
+    let mut range_proof_bp = vec![];
+
+    for (stmt_idx, stmt) in proof_spec.statements.iter().enumerate() {
+        match stmt {
+            Statement::PoKSignaturePS(s) => {
                 let revealed_msg_indices = s
                     .revealed_messages
                     .keys()
@@ -496,23 +661,42 @@ pub fn verify_proof(mut proof_spec: ProofSpec, proof: Proof) -> bool {
                     .collect::<HashSet<usize>>();
 
                 let msg_count = s.msg_count();
-                let r = check_responses_for_equality(
-                    stmt_idx,
-                    msg_count,
-                    &revealed_msg_indices,
-                    &equalities,
-                    &mut responses_for_equalities,
-                    &prf,
-                );
-                if !r {
-                    return false;
+                // TODO: Make a macro to reuse code.
+                let mut found = false;
+                for p in &proof.statement_proofs {
+                    match p {
+                        StatementProof::SignaturePSProof(prf) => {
+                            if prf.statement_idx == stmt_idx {
+                                let r = check_responses_for_equality(
+                                    stmt_idx,
+                                    msg_count,
+                                    &revealed_msg_indices,
+                                    &equalities,
+                                    &mut responses_for_equalities,
+                                    &p,
+                                );
+                                if !r {
+                                    return false;
+                                }
+
+                                let mut chal_bytes = prf.proof.get_bytes_for_challenge(
+                                    revealed_msg_indices,
+                                    &s.pk,
+                                    &s.params,
+                                );
+                                challenge_bytes.append(&mut chal_bytes);
+                                found = true;
+                                break;
+                            }
+                        }
+                        _ => (),
+                    }
                 }
-                let mut chal_bytes =
-                    p.proof
-                        .get_bytes_for_challenge(revealed_msg_indices, &s.pk, &s.params);
-                challenge_bytes.append(&mut chal_bytes);
+                if !found {
+                    panic!("Proof not found for statement {}", stmt_idx)
+                }
             }
-            (Statement::PoKSignatureBBS(s), StatementProof::SignatureBBSProof(p)) => {
+            Statement::PoKSignatureBBS(s) => {
                 let revealed_msg_indices = s
                     .revealed_messages
                     .keys()
@@ -520,83 +704,170 @@ pub fn verify_proof(mut proof_spec: ProofSpec, proof: Proof) -> bool {
                     .collect::<HashSet<usize>>();
                 // TODO: Accumulate responses in `responses_for_equalities` and check for equality
                 let msg_count = s.msg_count();
-                let r = check_responses_for_equality(
-                    stmt_idx,
-                    msg_count,
-                    &revealed_msg_indices,
-                    &equalities,
-                    &mut responses_for_equalities,
-                    &prf,
-                );
-                if !r {
-                    return false;
+                // TODO: Make a macro to reuse code.
+                let mut found = false;
+                for p in &proof.statement_proofs {
+                    match p {
+                        StatementProof::SignatureBBSProof(prf) => {
+                            if prf.statement_idx == stmt_idx {
+                                let r = check_responses_for_equality(
+                                    stmt_idx,
+                                    msg_count,
+                                    &revealed_msg_indices,
+                                    &equalities,
+                                    &mut responses_for_equalities,
+                                    &p,
+                                );
+                                if !r {
+                                    return false;
+                                }
+                                let mut chal_bytes = prf
+                                    .proof
+                                    .get_bytes_for_challenge(revealed_msg_indices, &s.pk);
+                                challenge_bytes.append(&mut chal_bytes);
+                                found = true;
+                                break;
+                            }
+                        }
+                        _ => (),
+                    }
                 }
-                let mut chal_bytes = p.proof.get_bytes_for_challenge(revealed_msg_indices, &s.pk);
-                challenge_bytes.append(&mut chal_bytes);
+                if !found {
+                    panic!("Proof not found for statement {}", stmt_idx)
+                }
+                /*let mut chal_bytes = p.proof.get_bytes_for_challenge(revealed_msg_indices, &s.pk);
+                challenge_bytes.append(&mut chal_bytes);*/
             }
-            _ => panic!(""),
+            Statement::RangeProofBulletproof(rp) => {
+                range_proof_bp.push((
+                    stmt_idx,
+                    RangeProofBPStmt {
+                        min: rp.min,
+                        max: rp.max,
+                        max_bits_in_val: rp.max_bits_in_val,
+                    },
+                ));
+            }
+            _ => (),
         }
     }
 
     // Append self attested claims to challenge. Same idea as Schnorr signature
     challenge_bytes.append(&mut self_attest_stmt_bytes);
 
-    let challenge = FieldElement::from_msg_hash(&challenge_bytes);
-    for (stmt, prf) in proof_spec
-        .statements
-        .into_iter()
-        .zip(proof.statement_proofs.into_iter())
-    {
-        match (stmt, prf) {
-            (Statement::PoKSignaturePS(s), StatementProof::SignaturePSProof(p)) => {
-                let pm = PSSigProofModule::new(s);
-                let r =
-                    pm.verify_proof_contribution(&challenge, StatementProof::SignaturePSProof(p));
+    let challenge = if range_proof_bp.len() > 0 {
+        // XXX: Will have just 1 verifier for now.
+        let mut transcript = Transcript::new(label);
+        transcript.append_message("seeding".as_bytes(), challenge_bytes.as_slice());
+        // TODO: Fix number of generators, this should be flexible
+        // TODO: The label can be different and should probably be fixed for all proofs
+        // TODO: Allow those generators to be passed as argument to proof creation since they will
+        // be generated once and stored.
+        let gens = BulletproofsGens::new(label, 512);
+        let mut verifier = BulletproofsVerifier::new(&mut transcript);
+        let mut bp_proof: Option<&mut BulletproofsProof> = None;
+        for p in proof.statement_proofs.iter_mut() {
+            match p {
+                StatementProof::BulletproofsProof(prf) => {
+                    bp_proof = Some(prf);
+                    break;
+                }
+                _ => (),
+            }
+        }
+        if bp_proof.is_none() {
+            panic!("BulletproofsProof not found in statement proofs")
+        }
+        let bp_proof = bp_proof.unwrap();
+
+        // TODO: Verify that bulletproof commits to same values
+
+        for (stmt_idx, stmt) in range_proof_bp {
+            let comms = bp_proof.statement_commitments.remove(&stmt_idx);
+            // TODO: use `ok_or` on the option
+            if comms.is_none() {
+                panic!(
+                    "BulletproofsProof commitments not found in for statement index {}",
+                    stmt_idx
+                );
+            }
+            let comms = comms.unwrap();
+            verify_bounded_num(
+                stmt.min,
+                stmt.max,
+                stmt.max_bits_in_val,
+                comms,
+                &mut verifier,
+            )
+            .unwrap();
+        }
+
+        verifier
+            .verify(&bp_proof.proof, &gens.g, &gens.h, &gens.G, &gens.H)
+            .unwrap();
+        transcript.challenge_scalar("final challenge".as_bytes())
+    } else {
+        FieldElement::from_msg_hash(&challenge_bytes)
+    };
+
+    for (stmt_idx, stmt) in proof_spec.statements.into_iter().enumerate() {
+        match stmt {
+            Statement::PoKSignaturePS(s) => {
+                let pm = PSSigProofModule::new(stmt_idx, s);
+                // TODO: Make a macro to reuse code.
+                let mut prf_idx = None;
+                for (i, p) in proof.statement_proofs.iter().enumerate() {
+                    match p {
+                        StatementProof::SignaturePSProof(prf) => {
+                            if prf.statement_idx == stmt_idx {
+                                prf_idx = Some(i);
+                                break;
+                            }
+                        }
+                        _ => (),
+                    }
+                }
+                if prf_idx.is_none() {
+                    panic!("Statement proof not found for index {}", stmt_idx);
+                }
+                let p = proof.statement_proofs.remove(prf_idx.unwrap());
+                let r = pm.verify_proof_contribution(&challenge, p);
                 if !r {
                     return false;
                 }
             }
-            (Statement::PoKSignatureBBS(s), StatementProof::SignatureBBSProof(p)) => {
-                let pm = BBSSigProofModule::new(s);
-                let r =
-                    pm.verify_proof_contribution(&challenge, StatementProof::SignatureBBSProof(p));
+            Statement::PoKSignatureBBS(s) => {
+                let pm = BBSSigProofModule::new(stmt_idx, s);
+                // TODO: Make a macro to reuse code.
+                let mut prf_idx = None;
+                for (i, p) in proof.statement_proofs.iter().enumerate() {
+                    match p {
+                        StatementProof::SignatureBBSProof(prf) => {
+                            if prf.statement_idx == stmt_idx {
+                                prf_idx = Some(i);
+                                break;
+                            }
+                        }
+                        _ => (),
+                    }
+                }
+                if prf_idx.is_none() {
+                    panic!("Statement proof not found for index {}", stmt_idx);
+                }
+                let p = proof.statement_proofs.remove(prf_idx.unwrap());
+                let r = pm.verify_proof_contribution(&challenge, p);
                 if !r {
                     return false;
                 }
             }
-            _ => panic!(""),
+            _ => (),
         }
     }
     true
 }
 
-// TODO: This should be remove.
-fn build_equalities_old(equalities: &mut Vec<HashSet<MessageRef>>, stmt: &Statement) {
-    match stmt {
-        Statement::Equality(m_refs) => equalities.push(m_refs.clone()),
-        _ => (),
-    }
-    let mut cur_idx = 0;
-    while cur_idx < equalities.len() {
-        let mut indices_to_merge = vec![];
-        for j in cur_idx + 1..equalities.len() {
-            if !equalities[cur_idx].is_disjoint(&equalities[j]) {
-                indices_to_merge.push(j);
-            }
-        }
-        for i in &indices_to_merge {
-            let items: HashSet<MessageRef> = equalities[*i].drain().collect();
-            for item in items {
-                equalities[cur_idx].insert(item);
-            }
-        }
-        for i in indices_to_merge {
-            equalities.remove(i);
-        }
-        cur_idx += 1;
-    }
-}
-
+/// Merge equalities of various statements such that the final array of equality sets are disjoint.
+/// Given Vec[ Set[(0, 1), (1, 3)], Set[(1, 3), (2, 4)], Set[(4, 5), (2, 6)] ] = Vec[ Set[(0, 1), (1, 3), (2, 4)], Set[(4, 5), (2, 6)] ]
 fn build_equalities_for_attributes(
     equalities: &mut Vec<HashSet<MessageRef>>,
     stmts: Vec<&Statement>,
@@ -637,6 +908,8 @@ fn build_equalities_for_attributes(
     }
 }
 
+// Generate blindings for messages in a statement. It ensures that messages that need to be proved
+// equal have same blindings
 fn generate_blindings_for_statement(
     stmt_idx: usize,
     msg_count: usize,
@@ -714,125 +987,11 @@ fn check_responses_for_equality(
 mod tests {
     use super::*;
     use amcl_wrapper::field_elem::FieldElementVector;
+    use failure::_core::cmp::min;
     use serde_json::error::ErrorCode::Message;
     use signatures::bbs::keys::generate as BBSKeygen;
     use signatures::ps::keys::keygen as PSKeygen;
-
-    #[test]
-    fn test_proof_of_one_ps_sig_from_proof_spec() {
-        let count_msgs = 5;
-        let params = PSParams::new("test".as_bytes());
-        let (vk, sk) = PSKeygen(count_msgs, &params);
-        let msgs = FieldElementVector::random(count_msgs);
-        let sig = PSSig::new(msgs.as_slice(), &sk, &params).unwrap();
-        assert!(sig.verify(msgs.as_slice(), &vk, &params).unwrap());
-
-        let mut revealed_msgs = HashMap::new();
-        revealed_msgs.insert(1, msgs[1].clone());
-        revealed_msgs.insert(3, msgs[3].clone());
-        revealed_msgs.insert(4, msgs[4].clone());
-
-        let stmt = PoKSignaturePS {
-            pk: vk.clone(),
-            params: params.clone(),
-            revealed_messages: revealed_msgs,
-        };
-        let mut proof_spec = ProofSpec::new();
-        proof_spec.add_statement(Statement::PoKSignaturePS(stmt.clone()));
-
-        // Prover's part
-        let mut pm_prover = PSSigProofModule::new(stmt.clone());
-
-        let witness = StatementWitness::SignaturePS(SignaturePSWitness {
-            sig,
-            messages: msgs.iter().map(|f| f.clone()).collect(),
-        });
-
-        let comm_bytes = pm_prover.get_hash_contribution(witness);
-        let chal = FieldElement::from_msg_hash(&comm_bytes);
-        let stmt_proof = pm_prover.get_proof_contribution(&chal);
-
-        // Verifier' part
-        let pm_verifer = PSSigProofModule::new(stmt);
-        pm_verifer.verify_proof_contribution(&chal, stmt_proof);
-    }
-
-    #[test]
-    fn test_proof_of_ps_and_bbs_sig() {
-        // PS sig
-        let count_msgs = 5;
-        let msgs_for_PS_sig = FieldElementVector::random(count_msgs);
-        let params = PSParams::new("test".as_bytes());
-        let (vk, sk) = PSKeygen(count_msgs, &params);
-        let ps_sig = PSSig::new(msgs_for_PS_sig.as_slice(), &sk, &params).unwrap();
-        assert!(ps_sig
-            .verify(msgs_for_PS_sig.as_slice(), &vk, &params)
-            .unwrap());
-
-        // BBS+ sig
-        let message_count = 7;
-        let msgs_for_BBS_sig = FieldElementVector::random(message_count);
-        let (verkey, signkey) = BBSKeygen(message_count).unwrap();
-        let bbs_sig = BBSSig::new(msgs_for_BBS_sig.as_slice(), &signkey, &verkey).unwrap();
-        assert!(bbs_sig
-            .verify(msgs_for_BBS_sig.as_slice(), &verkey)
-            .unwrap());
-
-        let mut revealed_msgs_for_PS_sig = HashMap::new();
-        revealed_msgs_for_PS_sig.insert(1, msgs_for_PS_sig[1].clone());
-        revealed_msgs_for_PS_sig.insert(3, msgs_for_PS_sig[3].clone());
-        revealed_msgs_for_PS_sig.insert(4, msgs_for_PS_sig[4].clone());
-
-        let mut revealed_msgs_for_BBS_sig = HashMap::new();
-        revealed_msgs_for_BBS_sig.insert(1, msgs_for_BBS_sig[1].clone());
-        revealed_msgs_for_BBS_sig.insert(2, msgs_for_BBS_sig[2].clone());
-        revealed_msgs_for_BBS_sig.insert(6, msgs_for_BBS_sig[6].clone());
-
-        let stmt_ps_sig = PoKSignaturePS {
-            pk: vk.clone(),
-            params: params.clone(),
-            revealed_messages: revealed_msgs_for_PS_sig,
-        };
-
-        let stmt_bbs_sig = PoKSignatureBBS {
-            pk: verkey.clone(),
-            revealed_messages: revealed_msgs_for_BBS_sig,
-        };
-
-        let mut proof_spec = ProofSpec::new();
-        proof_spec.add_statement(Statement::PoKSignaturePS(stmt_ps_sig.clone()));
-        proof_spec.add_statement(Statement::PoKSignatureBBS(stmt_bbs_sig.clone()));
-
-        // Prover's part
-        let mut pm_ps_prover = PSSigProofModule::new(stmt_ps_sig.clone());
-        let mut pm_bbs_prover = BBSSigProofModule::new(stmt_bbs_sig.clone());
-
-        let witness_PS = StatementWitness::SignaturePS(SignaturePSWitness {
-            sig: ps_sig,
-            messages: msgs_for_PS_sig.iter().map(|f| f.clone()).collect(),
-        });
-
-        let witness_BBS = StatementWitness::SignatureBBS(SignatureBBSWitness {
-            sig: bbs_sig,
-            messages: msgs_for_BBS_sig.iter().map(|f| f.clone()).collect(),
-        });
-
-        let mut comm_bytes = vec![];
-        comm_bytes.append(&mut pm_ps_prover.get_hash_contribution(witness_PS));
-        comm_bytes.append(&mut pm_bbs_prover.get_hash_contribution(witness_BBS));
-        let chal = FieldElement::from_msg_hash(&comm_bytes);
-
-        let stmt_ps_proof = pm_ps_prover.get_proof_contribution(&chal);
-        let stmt_bbs_proof = pm_bbs_prover.get_proof_contribution(&chal);
-
-        // Verifier' part
-        let pm_ps_verifer = PSSigProofModule::new(stmt_ps_sig.clone());
-        let pm_bbs_verifer = BBSSigProofModule::new(stmt_bbs_sig.clone());
-
-        assert!(pm_ps_verifer.verify_proof_contribution(&chal, stmt_ps_proof));
-
-        assert!(pm_bbs_verifer.verify_proof_contribution(&chal, stmt_bbs_proof));
-    }
+    use std::thread::Thread;
 
     #[test]
     fn test_proof_of_ps_and_bbs_sig_from_proof_spec() {
@@ -892,15 +1051,26 @@ mod tests {
             messages: msgs_for_BBS_sig.iter().map(|f| f.clone()).collect(),
         });
 
-        let proof = create_proof(
+        let mut statement_witnesses = HashMap::new();
+        statement_witnesses.insert(0, witness_PS);
+        statement_witnesses.insert(1, witness_BBS);
+
+        use rand::rngs::OsRng;
+        use rand::Rng;
+
+        let mut rng = rand::thread_rng();
+
+        // TODO: Is this the right way to do things
+        let proof = create_proof::<ThreadRng>(
             proof_spec.clone(),
             Witness {
-                statement_witnesses: vec![witness_PS, witness_BBS],
+                statement_witnesses,
             },
+            "test".as_bytes(),
         );
 
         // Verifier's part
-        assert!(verify_proof(proof_spec, proof));
+        assert!(verify_proof(proof_spec, proof, "test".as_bytes()));
     }
 
     #[test]
@@ -1061,15 +1231,26 @@ mod tests {
             messages: msgs_for_BBS_sig.iter().map(|f| f.clone()).collect(),
         });
 
-        let proof = create_proof(
+        let mut statement_witnesses = HashMap::new();
+        statement_witnesses.insert(0, witness_PS_1);
+        statement_witnesses.insert(1, witness_PS_2);
+        statement_witnesses.insert(2, witness_BBS);
+
+        use rand::rngs::OsRng;
+        use rand::Rng;
+
+        let mut rng = rand::thread_rng();
+
+        let proof = create_proof::<ThreadRng>(
             proof_spec.clone(),
             Witness {
-                statement_witnesses: vec![witness_PS_1, witness_PS_2, witness_BBS],
+                statement_witnesses,
             },
+            "test".as_bytes(),
         );
 
         // Verifier's part
-        assert!(verify_proof(proof_spec, proof));
+        assert!(verify_proof(proof_spec, proof, "test".as_bytes()));
     }
 
     #[test]
@@ -1135,7 +1316,6 @@ mod tests {
         proof_spec.add_statement(Statement::SelfAttestedClaim(claim_3.as_bytes().to_vec()));
 
         // Prover's part
-
         let witness_PS_1 = StatementWitness::SignaturePS(SignaturePSWitness {
             sig: ps_sig_1,
             messages: msgs_for_PS_sig_1.iter().map(|f| f.clone()).collect(),
@@ -1146,15 +1326,210 @@ mod tests {
             messages: msgs_for_PS_sig_2.iter().map(|f| f.clone()).collect(),
         });
 
-        let proof = create_proof(
+        let mut statement_witnesses = HashMap::new();
+        statement_witnesses.insert(0, witness_PS_1);
+        statement_witnesses.insert(2, witness_PS_2);
+
+        use rand::rngs::OsRng;
+        use rand::Rng;
+
+        let mut rng = rand::thread_rng();
+
+        let proof = create_proof::<ThreadRng>(
             proof_spec.clone(),
             Witness {
-                statement_witnesses: vec![witness_PS_1, witness_PS_2],
+                statement_witnesses,
             },
+            "test".as_bytes(),
         );
 
         // Verifier's part
-        assert!(verify_proof(proof_spec, proof));
+        assert!(verify_proof(proof_spec, proof, "test".as_bytes()));
+    }
+
+    #[test]
+    fn test_proof_of_knowledge_of_ps_sig_and_range_proof_over_1_message() {
+        // Prove knowledge of a PS signature and prove that one of the attribute is in a given range
+        let min = 5;
+        let max = 25;
+        // PS sig
+        let count_msgs = 5;
+        let params = PSParams::new("test".as_bytes());
+        let (vk, sk) = PSKeygen(count_msgs, &params);
+        let mut msgs_for_PS_sig = FieldElementVector::random(count_msgs);
+        let min = 5;
+        let max = 25;
+        // This message will be proved in [min, max]
+        msgs_for_PS_sig[2] = FieldElement::from(10u64);
+        let ps_sig = PSSig::new(msgs_for_PS_sig.as_slice(), &sk, &params).unwrap();
+        assert!(ps_sig
+            .verify(msgs_for_PS_sig.as_slice(), &vk, &params)
+            .unwrap());
+
+        let stmt_ps_sig = PoKSignaturePS {
+            pk: vk.clone(),
+            params: params.clone(),
+            revealed_messages: HashMap::new(),
+        };
+
+        let stmt_range_proof = RangeProofBulletproof {
+            message_ref: MessageRef {
+                statement_idx: 0,
+                message_idx: 2,
+            },
+            min,
+            max,
+            max_bits_in_val: 64,
+        };
+
+        let mut proof_spec = ProofSpec::new();
+        proof_spec.add_statement(Statement::PoKSignaturePS(stmt_ps_sig.clone()));
+        proof_spec.add_statement(Statement::RangeProofBulletproof(stmt_range_proof.clone()));
+
+        // Prover's part
+
+        let witness_PS = StatementWitness::SignaturePS(SignaturePSWitness {
+            sig: ps_sig,
+            messages: msgs_for_PS_sig.iter().map(|f| f.clone()).collect(),
+        });
+        let mut statement_witnesses = HashMap::new();
+        statement_witnesses.insert(0, witness_PS);
+
+        use rand::rngs::OsRng;
+        use rand::Rng;
+
+        let mut rng = rand::thread_rng();
+
+        let proof = create_proof::<ThreadRng>(
+            proof_spec.clone(),
+            Witness {
+                statement_witnesses,
+            },
+            "test".as_bytes(),
+        );
+
+        // Verifier's part
+        assert!(verify_proof(proof_spec, proof, "test".as_bytes()));
+    }
+
+    #[test]
+    fn test_proof_of_knowledge_of_ps_and_bbs_sig_and_range_proof_over_several_messages() {
+        // Prove knowledge of a PS and a BBS+ signature and certain attributes are in a given range
+        // PS sig
+        let count_msgs = 5;
+        let params = PSParams::new("test".as_bytes());
+        let (vk, sk) = PSKeygen(count_msgs, &params);
+        let mut msgs_for_PS_sig = FieldElementVector::random(count_msgs);
+
+        let min_1 = 100;
+        let max_1 = 200;
+        // This message will be proved in [min_1, max_1]
+        msgs_for_PS_sig[1] = FieldElement::from(192u64);
+
+        let min_2 = 29;
+        let max_2 = 35;
+        // This message will be proved in [min_2, max_2]
+        msgs_for_PS_sig[4] = FieldElement::from(31u64);
+
+        let ps_sig = PSSig::new(msgs_for_PS_sig.as_slice(), &sk, &params).unwrap();
+        assert!(ps_sig
+            .verify(msgs_for_PS_sig.as_slice(), &vk, &params)
+            .unwrap());
+
+        // BBS+ sig
+        let message_count = 7;
+        let (verkey, signkey) = BBSKeygen(message_count).unwrap();
+        let mut msgs_for_BBS_sig = FieldElementVector::random(message_count);
+
+        let min_3 = 100000000;
+        let max_3 = 200000000000;
+        // This message will be proved in [min_3, max_3]
+        msgs_for_BBS_sig[1] = FieldElement::from(100000002u64);
+
+        let bbs_sig = BBSSig::new(msgs_for_BBS_sig.as_slice(), &signkey, &verkey).unwrap();
+        assert!(bbs_sig
+            .verify(msgs_for_BBS_sig.as_slice(), &verkey)
+            .unwrap());
+
+        let stmt_ps_sig = PoKSignaturePS {
+            pk: vk.clone(),
+            params: params.clone(),
+            revealed_messages: HashMap::new(),
+        };
+
+        let stmt_bbs_sig = PoKSignatureBBS {
+            pk: verkey.clone(),
+            revealed_messages: HashMap::new(),
+        };
+
+        let stmt_range_proof_1 = RangeProofBulletproof {
+            message_ref: MessageRef {
+                statement_idx: 0,
+                message_idx: 1,
+            },
+            min: min_1,
+            max: max_1,
+            max_bits_in_val: 64,
+        };
+
+        let stmt_range_proof_2 = RangeProofBulletproof {
+            message_ref: MessageRef {
+                statement_idx: 0,
+                message_idx: 4,
+            },
+            min: min_2,
+            max: max_2,
+            max_bits_in_val: 64,
+        };
+
+        let stmt_range_proof_3 = RangeProofBulletproof {
+            message_ref: MessageRef {
+                statement_idx: 1,
+                message_idx: 1,
+            },
+            min: min_3,
+            max: max_3,
+            max_bits_in_val: 64,
+        };
+
+        let mut proof_spec = ProofSpec::new();
+        proof_spec.add_statement(Statement::PoKSignaturePS(stmt_ps_sig.clone()));
+        proof_spec.add_statement(Statement::PoKSignatureBBS(stmt_bbs_sig.clone()));
+        proof_spec.add_statement(Statement::RangeProofBulletproof(stmt_range_proof_1.clone()));
+        proof_spec.add_statement(Statement::RangeProofBulletproof(stmt_range_proof_2.clone()));
+        proof_spec.add_statement(Statement::RangeProofBulletproof(stmt_range_proof_3.clone()));
+
+        // Prover's part
+
+        let witness_PS = StatementWitness::SignaturePS(SignaturePSWitness {
+            sig: ps_sig,
+            messages: msgs_for_PS_sig.iter().map(|f| f.clone()).collect(),
+        });
+
+        let witness_BBS = StatementWitness::SignatureBBS(SignatureBBSWitness {
+            sig: bbs_sig,
+            messages: msgs_for_BBS_sig.iter().map(|f| f.clone()).collect(),
+        });
+
+        let mut statement_witnesses = HashMap::new();
+        statement_witnesses.insert(0, witness_PS);
+        statement_witnesses.insert(1, witness_BBS);
+
+        use rand::rngs::OsRng;
+        use rand::Rng;
+
+        let mut rng = rand::thread_rng();
+
+        let proof = create_proof::<ThreadRng>(
+            proof_spec.clone(),
+            Witness {
+                statement_witnesses,
+            },
+            "test".as_bytes(),
+        );
+
+        // Verifier's part
+        assert!(verify_proof(proof_spec, proof, "test".as_bytes()));
     }
 
     #[test]
@@ -1174,8 +1549,8 @@ mod tests {
             message_idx: 5,
         });
         let stmt_1 = Statement::Equality(s1);
-        build_equalities_old(&mut equalities, &stmt_1);
-        assert_eq!(equalities.len(), 1);
+        /*build_equalities_old(&mut equalities, &stmt_1);
+        assert_eq!(equalities.len(), 1);*/
 
         let mut s2 = HashSet::new();
         s2.insert(MessageRef {
@@ -1183,8 +1558,8 @@ mod tests {
             message_idx: 5,
         });
         let stmt_2 = Statement::Equality(s2);
-        build_equalities_old(&mut equalities, &stmt_2);
-        assert_eq!(equalities.len(), 1);
+        /*build_equalities_old(&mut equalities, &stmt_2);
+        assert_eq!(equalities.len(), 1);*/
 
         let mut s3 = HashSet::new();
         s3.insert(MessageRef {
@@ -1192,8 +1567,8 @@ mod tests {
             message_idx: 5,
         });
         let stmt_3 = Statement::Equality(s3);
-        build_equalities_old(&mut equalities, &stmt_3);
-        assert_eq!(equalities.len(), 2);
+        /*build_equalities_old(&mut equalities, &stmt_3);
+        assert_eq!(equalities.len(), 2);*/
 
         let mut s4 = HashSet::new();
         s4.insert(MessageRef {
@@ -1205,8 +1580,8 @@ mod tests {
             message_idx: 6,
         });
         let stmt_4 = Statement::Equality(s4);
-        build_equalities_old(&mut equalities, &stmt_4);
-        assert_eq!(equalities.len(), 2);
+        /*build_equalities_old(&mut equalities, &stmt_4);
+        assert_eq!(equalities.len(), 2);*/
 
         // What is a statement like (1, 5) == (0, 4) was added next? Would length change to 1 from 2?
         let mut s5 = HashSet::new();
@@ -1241,4 +1616,120 @@ mod tests {
         build_equalities_for_attributes(&mut equalities_2, statements);
         assert_eq!(equalities_2.len(), 2);
     }
+
+    /*#[test]
+    fn test_proof_of_one_ps_sig_from_proof_spec() {
+        let count_msgs = 5;
+        let params = PSParams::new("test".as_bytes());
+        let (vk, sk) = PSKeygen(count_msgs, &params);
+        let msgs = FieldElementVector::random(count_msgs);
+        let sig = PSSig::new(msgs.as_slice(), &sk, &params).unwrap();
+        assert!(sig.verify(msgs.as_slice(), &vk, &params).unwrap());
+
+        let mut revealed_msgs = HashMap::new();
+        revealed_msgs.insert(1, msgs[1].clone());
+        revealed_msgs.insert(3, msgs[3].clone());
+        revealed_msgs.insert(4, msgs[4].clone());
+
+        let stmt = PoKSignaturePS {
+            pk: vk.clone(),
+            params: params.clone(),
+            revealed_messages: revealed_msgs,
+        };
+        let mut proof_spec = ProofSpec::new();
+        proof_spec.add_statement(Statement::PoKSignaturePS(stmt.clone()));
+
+        // Prover's part
+        let mut pm_prover = PSSigProofModule::new(stmt.clone());
+
+        let witness = StatementWitness::SignaturePS(SignaturePSWitness {
+            sig,
+            messages: msgs.iter().map(|f| f.clone()).collect(),
+        });
+
+        let comm_bytes = pm_prover.get_hash_contribution(witness);
+        let chal = FieldElement::from_msg_hash(&comm_bytes);
+        let stmt_proof = pm_prover.get_proof_contribution(&chal);
+
+        // Verifier' part
+        let pm_verifer = PSSigProofModule::new(stmt);
+        pm_verifer.verify_proof_contribution(&chal, stmt_proof);
+    }
+
+    #[test]
+    fn test_proof_of_ps_and_bbs_sig() {
+        // PS sig
+        let count_msgs = 5;
+        let msgs_for_PS_sig = FieldElementVector::random(count_msgs);
+        let params = PSParams::new("test".as_bytes());
+        let (vk, sk) = PSKeygen(count_msgs, &params);
+        let ps_sig = PSSig::new(msgs_for_PS_sig.as_slice(), &sk, &params).unwrap();
+        assert!(ps_sig
+            .verify(msgs_for_PS_sig.as_slice(), &vk, &params)
+            .unwrap());
+
+        // BBS+ sig
+        let message_count = 7;
+        let msgs_for_BBS_sig = FieldElementVector::random(message_count);
+        let (verkey, signkey) = BBSKeygen(message_count).unwrap();
+        let bbs_sig = BBSSig::new(msgs_for_BBS_sig.as_slice(), &signkey, &verkey).unwrap();
+        assert!(bbs_sig
+            .verify(msgs_for_BBS_sig.as_slice(), &verkey)
+            .unwrap());
+
+        let mut revealed_msgs_for_PS_sig = HashMap::new();
+        revealed_msgs_for_PS_sig.insert(1, msgs_for_PS_sig[1].clone());
+        revealed_msgs_for_PS_sig.insert(3, msgs_for_PS_sig[3].clone());
+        revealed_msgs_for_PS_sig.insert(4, msgs_for_PS_sig[4].clone());
+
+        let mut revealed_msgs_for_BBS_sig = HashMap::new();
+        revealed_msgs_for_BBS_sig.insert(1, msgs_for_BBS_sig[1].clone());
+        revealed_msgs_for_BBS_sig.insert(2, msgs_for_BBS_sig[2].clone());
+        revealed_msgs_for_BBS_sig.insert(6, msgs_for_BBS_sig[6].clone());
+
+        let stmt_ps_sig = PoKSignaturePS {
+            pk: vk.clone(),
+            params: params.clone(),
+            revealed_messages: revealed_msgs_for_PS_sig,
+        };
+
+        let stmt_bbs_sig = PoKSignatureBBS {
+            pk: verkey.clone(),
+            revealed_messages: revealed_msgs_for_BBS_sig,
+        };
+
+        let mut proof_spec = ProofSpec::new();
+        proof_spec.add_statement(Statement::PoKSignaturePS(stmt_ps_sig.clone()));
+        proof_spec.add_statement(Statement::PoKSignatureBBS(stmt_bbs_sig.clone()));
+
+        // Prover's part
+        let mut pm_ps_prover = PSSigProofModule::new(stmt_ps_sig.clone());
+        let mut pm_bbs_prover = BBSSigProofModule::new(stmt_bbs_sig.clone());
+
+        let witness_PS = StatementWitness::SignaturePS(SignaturePSWitness {
+            sig: ps_sig,
+            messages: msgs_for_PS_sig.iter().map(|f| f.clone()).collect(),
+        });
+
+        let witness_BBS = StatementWitness::SignatureBBS(SignatureBBSWitness {
+            sig: bbs_sig,
+            messages: msgs_for_BBS_sig.iter().map(|f| f.clone()).collect(),
+        });
+
+        let mut comm_bytes = vec![];
+        comm_bytes.append(&mut pm_ps_prover.get_hash_contribution(witness_PS));
+        comm_bytes.append(&mut pm_bbs_prover.get_hash_contribution(witness_BBS));
+        let chal = FieldElement::from_msg_hash(&comm_bytes);
+
+        let stmt_ps_proof = pm_ps_prover.get_proof_contribution(&chal);
+        let stmt_bbs_proof = pm_bbs_prover.get_proof_contribution(&chal);
+
+        // Verifier' part
+        let pm_ps_verifer = PSSigProofModule::new(stmt_ps_sig.clone());
+        let pm_bbs_verifer = BBSSigProofModule::new(stmt_bbs_sig.clone());
+
+        assert!(pm_ps_verifer.verify_proof_contribution(&chal, stmt_ps_proof));
+
+        assert!(pm_bbs_verifer.verify_proof_contribution(&chal, stmt_bbs_proof));
+    }*/
 }

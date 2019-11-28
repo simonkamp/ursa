@@ -204,7 +204,7 @@ mod tests {
         let g = G1::from_msg_hash("g".as_bytes());
         let h = G1::from_msg_hash("h".as_bytes());
 
-        let n = 32;
+        let n = 64;
 
         let label = b"BoundsTest";
         let (proof, commitments) = gen_proof_of_bounded_num(

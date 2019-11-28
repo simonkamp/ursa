@@ -22,6 +22,10 @@ pub trait TranscriptProtocol {
     fn commit_scalar(&mut self, label: &'static [u8], scalar: &FieldElement);
     /// Commit a `point` with the given `label`.
     fn commit_point(&mut self, label: &'static [u8], point: &G1);
+    /// Commit a domain separator a given label and bytes. This is used when an external proving
+    /// protocol using Bulletproofs is proving some other statements as well. The external
+    /// protocol before invoking Bulletproofs will use this method to populate the transcript.
+    fn commit_bytes(&mut self, label: &'static [u8], message: &[u8]);
     /// Compute a `label`ed challenge variable.
     fn challenge_scalar(&mut self, label: &'static [u8]) -> FieldElement;
 }
@@ -50,6 +54,10 @@ impl TranscriptProtocol for Transcript {
 
     fn commit_point(&mut self, label: &'static [u8], point: &G1) {
         self.append_message(label, &point.to_bytes());
+    }
+
+    fn commit_bytes(&mut self, label: &'static [u8], message: &[u8]) {
+        self.append_message(label, message);
     }
 
     fn challenge_scalar(&mut self, label: &'static [u8]) -> FieldElement {
