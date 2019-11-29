@@ -1,12 +1,20 @@
 use amcl_wrapper::field_elem::{FieldElement, FieldElementVector};
 use amcl_wrapper::group_elem_g1::G1;
 use bulletproofs::r1cs::gadgets::bound_check::{prove_bounded_num, verify_bounded_num};
+use bulletproofs::r1cs::gadgets::set_membership::{prove_set_membership, verify_set_membership};
+use bulletproofs::r1cs::gadgets::set_non_membership::{
+    prove_set_non_membership, verify_set_non_membership,
+};
 use bulletproofs::r1cs::Generators as BulletproofsGens;
 use bulletproofs::r1cs::Prover as BulletproofsProver;
 use bulletproofs::r1cs::R1CSProof;
 use bulletproofs::r1cs::Verifier as BulletproofsVerifier;
+use bulletproofs::transcript::TranscriptProtocol;
 use failure::_core::ptr::eq;
 use merlin::Transcript;
+use rand::prelude::ThreadRng;
+use rand::rngs::OsRng;
+use rand::{CryptoRng, Rng};
 use signatures::bbs::keys::PublicKey as BBSVerkey;
 use signatures::bbs::pok_sig::{PoKOfSignature as PoKBBSSig, PoKOfSignatureProof as PoKBBSigProof};
 use signatures::bbs::signature::Signature as BBSSig;
@@ -57,6 +65,8 @@ pub enum Statement {
     SelfAttestedClaim(Vec<u8>),
     // Range proof over a message from a PS or a BBS sig using Bulletproofs. The range is public.
     RangeProofBulletproof(RangeProofBulletproof),
+    SetMemBulletproof(SetMemBulletproof),
+    SetNonMemBulletproof(SetNonMemBulletproof),
     //RangeProofPSBulletproof(RangeProofPSBulletproof<'a>),
     // Input validation needed to ensure no conflicts between equality and inequality
     // Inequality(Vec<Ref>),
@@ -94,6 +104,18 @@ pub struct RangeProofBulletproof {
     // TODO: Ensure `max_bits_in_val` is appropriate
     max_bits_in_val: usize,
     //gens: &'a BulletproofsGens
+}
+
+#[derive(Clone)]
+pub struct SetMemBulletproof {
+    message_ref: MessageRef,
+    set: Vec<FieldElement>,
+}
+
+#[derive(Clone)]
+pub struct SetNonMemBulletproof {
+    message_ref: MessageRef,
+    set: Vec<FieldElement>,
 }
 
 trait PoKSignature {
@@ -270,10 +292,6 @@ impl PSSigProofModule {
     }
 }
 
-/*pub struct BulletproofsProofModule<'a> {
-    gens: &'a BulletproofsGens
-}*/
-
 impl ProofModule for PSSigProofModule {
     fn get_hash_contribution(&mut self, witness: StatementWitness) -> Vec<u8> {
         let pok_sig = match witness {
@@ -385,10 +403,15 @@ struct RangeProofBPWitness {
     pub blinding: FieldElement,
 }
 
-use bulletproofs::transcript::TranscriptProtocol;
-use rand::prelude::ThreadRng;
-use rand::rngs::OsRng;
-use rand::{CryptoRng, Rng};
+struct SetMemBPWitness {
+    pub val: FieldElement,
+    pub blinding: FieldElement,
+}
+
+struct SetNonMemBPWitness {
+    pub val: FieldElement,
+    pub blinding: FieldElement,
+}
 
 pub fn create_proof<R: Rng + CryptoRng>(
     mut proof_spec: ProofSpec,
@@ -416,18 +439,22 @@ pub fn create_proof<R: Rng + CryptoRng>(
     // Choose same blinding for all equal messages
     let blindings_for_equalities = FieldElementVector::random(equalities.len());
 
+    // References to attributes using part of bulletproofs
+    let mut range_proof_bp_refs = HashMap::<MessageRef, usize>::new();
+    let mut set_mem_bp_refs = HashMap::<MessageRef, usize>::new();
+    let mut set_non_mem_bp_refs = HashMap::<MessageRef, usize>::new();
+
     // Bulletproof statements
     // XXX: What if a Bulletproof statement needed referenced several statement
-    //    let mut range_proof_bp_stmts = HashMap::new();
     // BP statement id -> BP witness
     let mut range_proof_bp_wit = HashMap::new();
+    let mut set_mem_bp_wit = HashMap::new();
+    let mut set_non_mem_bp_wit = HashMap::new();
 
     // Vec<(statement index, BP statement, BP witness)>
     let mut range_proof_bp = vec![];
-
-    // Blindings for bulletproofs
-    // Change to bp_refs and HashSet
-    let mut bp_refs = HashMap::<MessageRef, usize>::new();
+    let mut set_mem_bp = vec![];
+    let mut set_non_mem_bp = vec![];
 
     // Remove equality statements since they are already processed
     // Also remove self attested claim statements since they will be processed later
@@ -448,8 +475,13 @@ pub fn create_proof<R: Rng + CryptoRng>(
                 stmt_indices_to_remove.push(i);
             }
             Statement::RangeProofBulletproof(rp) => {
-                bp_refs.insert(rp.message_ref.clone(), i);
-                //bp_stmt_indices.insert(i);
+                range_proof_bp_refs.insert(rp.message_ref.clone(), i);
+            }
+            Statement::SetMemBulletproof(rp) => {
+                set_mem_bp_refs.insert(rp.message_ref.clone(), i);
+            }
+            Statement::SetNonMemBulletproof(rp) => {
+                set_non_mem_bp_refs.insert(rp.message_ref.clone(), i);
             }
             _ => (),
         }
@@ -471,26 +503,18 @@ pub fn create_proof<R: Rng + CryptoRng>(
                 let w = witness.statement_witnesses.remove(&stmt_idx).unwrap();
                 match w {
                     StatementWitness::SignaturePS(SignaturePSWitness { sig, messages }) => {
-                        for i in 0..msg_count {
-                            if s.revealed_messages.contains_key(&i) {
-                                continue;
-                            }
-                            let msg_ref = MessageRef {
-                                statement_idx: stmt_idx,
-                                message_idx: i,
-                            };
-                            if bp_refs.contains_key(&msg_ref) {
-                                // TODO: Add a to_u64 in FieldElement
-                                let val = messages[i].to_bignum().w[0] as u64;
-                                range_proof_bp_wit.insert(
-                                    bp_refs[&msg_ref],
-                                    RangeProofBPWitness {
-                                        val,
-                                        blinding: blindings[i].clone(),
-                                    },
-                                );
-                            }
-                        }
+                        update_bp_witnesses(
+                            stmt_idx,
+                            &messages,
+                            &s.revealed_messages,
+                            &blindings,
+                            &range_proof_bp_refs,
+                            &set_mem_bp_refs,
+                            &set_non_mem_bp_refs,
+                            &mut range_proof_bp_wit,
+                            &mut set_mem_bp_wit,
+                            &mut set_non_mem_bp_wit,
+                        );
                         let mut pm = PSSigProofModule::new(stmt_idx, s);
                         pm.blindings = Some(blindings);
                         let mut c = pm.get_hash_contribution(StatementWitness::SignaturePS(
@@ -515,26 +539,19 @@ pub fn create_proof<R: Rng + CryptoRng>(
                 let w = witness.statement_witnesses.remove(&stmt_idx).unwrap();
                 match w {
                     StatementWitness::SignatureBBS(SignatureBBSWitness { sig, messages }) => {
-                        for i in 0..msg_count {
-                            if s.revealed_messages.contains_key(&i) {
-                                continue;
-                            }
-                            let msg_ref = MessageRef {
-                                statement_idx: stmt_idx,
-                                message_idx: i,
-                            };
-                            if bp_refs.contains_key(&msg_ref) {
-                                // TODO: Add a to_u64 in FieldElement
-                                let val = messages[i].to_bignum().w[0] as u64;
-                                range_proof_bp_wit.insert(
-                                    bp_refs[&msg_ref],
-                                    RangeProofBPWitness {
-                                        val,
-                                        blinding: blindings[i].clone(),
-                                    },
-                                );
-                            }
-                        }
+                        // TODO: This is duplicated from previous match, remove
+                        update_bp_witnesses(
+                            stmt_idx,
+                            &messages,
+                            &s.revealed_messages,
+                            &blindings,
+                            &range_proof_bp_refs,
+                            &set_mem_bp_refs,
+                            &set_non_mem_bp_refs,
+                            &mut range_proof_bp_wit,
+                            &mut set_mem_bp_wit,
+                            &mut set_non_mem_bp_wit,
+                        );
                         let mut pm = BBSSigProofModule::new(stmt_idx, s);
                         pm.blindings = Some(blindings);
                         let mut c = pm.get_hash_contribution(StatementWitness::SignatureBBS(
@@ -557,6 +574,16 @@ pub fn create_proof<R: Rng + CryptoRng>(
                     range_proof_bp_wit.remove(&stmt_idx).unwrap(),
                 ));
             }
+            Statement::SetMemBulletproof(sp) => {
+                set_mem_bp.push((stmt_idx, sp.set, set_mem_bp_wit.remove(&stmt_idx).unwrap()));
+            }
+            Statement::SetNonMemBulletproof(sp) => {
+                set_non_mem_bp.push((
+                    stmt_idx,
+                    sp.set,
+                    set_non_mem_bp_wit.remove(&stmt_idx).unwrap(),
+                ));
+            }
             _ => (),
         }
     }
@@ -564,7 +591,10 @@ pub fn create_proof<R: Rng + CryptoRng>(
     // Append self attested claims to challenge. Same idea as Schnorr signature
     comm_bytes.append(&mut self_attest_stmt_bytes);
 
-    let (challenge, bp_proof) = if bp_refs.len() > 0 {
+    let (challenge, bp_proof) = if (range_proof_bp_refs.len() > 0
+        || set_mem_bp_refs.len() > 0
+        || set_non_mem_bp_refs.len() > 0)
+    {
         // XXX: Will have just 1 prover for now.
         let mut transcript = Transcript::new(label);
         transcript.append_message("seeding".as_bytes(), comm_bytes.as_slice());
@@ -590,6 +620,33 @@ pub fn create_proof<R: Rng + CryptoRng>(
                 .unwrap();
                 commitments.insert(stmt_idx, comms);
             }
+
+            for (stmt_idx, set, wit) in set_mem_bp {
+                // TODO: Avoid these clonings
+                let comms: Vec<G1> = prove_set_membership::<R>(
+                    wit.val.clone(),
+                    Some(wit.blinding.clone()),
+                    &set,
+                    None,
+                    &mut prover,
+                )
+                .unwrap();
+                commitments.insert(stmt_idx, comms);
+            }
+
+            for (stmt_idx, set, wit) in set_non_mem_bp {
+                // TODO: Avoid these clonings
+                let comms: Vec<G1> = prove_set_non_membership::<R>(
+                    wit.val.clone(),
+                    Some(wit.blinding.clone()),
+                    &set,
+                    None,
+                    &mut prover,
+                )
+                .unwrap();
+                commitments.insert(stmt_idx, comms);
+            }
+
             let proof = prover.prove(&gens.G, &gens.H).unwrap();
             (commitments, proof)
         };
@@ -650,6 +707,8 @@ pub fn verify_proof(mut proof_spec: ProofSpec, mut proof: Proof, label: &'static
     let mut challenge_bytes = vec![];
 
     let mut range_proof_bp = vec![];
+    let mut set_mem_bp = vec![];
+    let mut set_non_mem_bp = vec![];
 
     for (stmt_idx, stmt) in proof_spec.statements.iter().enumerate() {
         match stmt {
@@ -735,8 +794,6 @@ pub fn verify_proof(mut proof_spec: ProofSpec, mut proof: Proof, label: &'static
                 if !found {
                     panic!("Proof not found for statement {}", stmt_idx)
                 }
-                /*let mut chal_bytes = p.proof.get_bytes_for_challenge(revealed_msg_indices, &s.pk);
-                challenge_bytes.append(&mut chal_bytes);*/
             }
             Statement::RangeProofBulletproof(rp) => {
                 range_proof_bp.push((
@@ -748,6 +805,12 @@ pub fn verify_proof(mut proof_spec: ProofSpec, mut proof: Proof, label: &'static
                     },
                 ));
             }
+            Statement::SetMemBulletproof(sp) => {
+                set_mem_bp.push((stmt_idx, sp.set.clone()));
+            }
+            Statement::SetNonMemBulletproof(sp) => {
+                set_non_mem_bp.push((stmt_idx, sp.set.clone()));
+            }
             _ => (),
         }
     }
@@ -755,60 +818,87 @@ pub fn verify_proof(mut proof_spec: ProofSpec, mut proof: Proof, label: &'static
     // Append self attested claims to challenge. Same idea as Schnorr signature
     challenge_bytes.append(&mut self_attest_stmt_bytes);
 
-    let challenge = if range_proof_bp.len() > 0 {
-        // XXX: Will have just 1 verifier for now.
-        let mut transcript = Transcript::new(label);
-        transcript.append_message("seeding".as_bytes(), challenge_bytes.as_slice());
-        // TODO: Fix number of generators, this should be flexible
-        // TODO: The label can be different and should probably be fixed for all proofs
-        // TODO: Allow those generators to be passed as argument to proof creation since they will
-        // be generated once and stored.
-        let gens = BulletproofsGens::new(label, 512);
-        let mut verifier = BulletproofsVerifier::new(&mut transcript);
-        let mut bp_proof: Option<&mut BulletproofsProof> = None;
-        for p in proof.statement_proofs.iter_mut() {
-            match p {
-                StatementProof::BulletproofsProof(prf) => {
-                    bp_proof = Some(prf);
-                    break;
+    let challenge =
+        if (range_proof_bp.len() > 0 || set_mem_bp.len() > 0 || set_non_mem_bp.len() > 0) {
+            // XXX: Will have just 1 verifier for now.
+            let mut transcript = Transcript::new(label);
+            transcript.append_message("seeding".as_bytes(), challenge_bytes.as_slice());
+            // TODO: Fix number of generators, this should be flexible
+            // TODO: The label can be different and should probably be fixed for all proofs
+            // TODO: Allow those generators to be passed as argument to proof creation since they will
+            // be generated once and stored.
+            let gens = BulletproofsGens::new(label, 512);
+            let mut verifier = BulletproofsVerifier::new(&mut transcript);
+            let mut bp_proof: Option<&mut BulletproofsProof> = None;
+            for p in proof.statement_proofs.iter_mut() {
+                match p {
+                    StatementProof::BulletproofsProof(prf) => {
+                        bp_proof = Some(prf);
+                        break;
+                    }
+                    _ => (),
                 }
-                _ => (),
             }
-        }
-        if bp_proof.is_none() {
-            panic!("BulletproofsProof not found in statement proofs")
-        }
-        let bp_proof = bp_proof.unwrap();
-
-        // TODO: Verify that bulletproof commits to same values
-
-        for (stmt_idx, stmt) in range_proof_bp {
-            let comms = bp_proof.statement_commitments.remove(&stmt_idx);
-            // TODO: use `ok_or` on the option
-            if comms.is_none() {
-                panic!(
-                    "BulletproofsProof commitments not found in for statement index {}",
-                    stmt_idx
-                );
+            if bp_proof.is_none() {
+                panic!("BulletproofsProof not found in statement proofs")
             }
-            let comms = comms.unwrap();
-            verify_bounded_num(
-                stmt.min,
-                stmt.max,
-                stmt.max_bits_in_val,
-                comms,
-                &mut verifier,
-            )
-            .unwrap();
-        }
+            let bp_proof = bp_proof.unwrap();
 
-        verifier
-            .verify(&bp_proof.proof, &gens.g, &gens.h, &gens.G, &gens.H)
-            .unwrap();
-        transcript.challenge_scalar("final challenge".as_bytes())
-    } else {
-        FieldElement::from_msg_hash(&challenge_bytes)
-    };
+            // TODO: Verify that bulletproof commits to same values
+
+            for (stmt_idx, stmt) in range_proof_bp {
+                let comms = bp_proof.statement_commitments.remove(&stmt_idx);
+                // TODO: use `ok_or` on the option
+                if comms.is_none() {
+                    panic!(
+                        "BulletproofsProof commitments not found in for statement index {}",
+                        stmt_idx
+                    );
+                }
+                let comms = comms.unwrap();
+                verify_bounded_num(
+                    stmt.min,
+                    stmt.max,
+                    stmt.max_bits_in_val,
+                    comms,
+                    &mut verifier,
+                )
+                .unwrap();
+            }
+
+            for (stmt_idx, set) in set_mem_bp {
+                let comms = bp_proof.statement_commitments.remove(&stmt_idx);
+                // TODO: use `ok_or` on the option
+                if comms.is_none() {
+                    panic!(
+                        "BulletproofsProof commitments not found in for statement index {}",
+                        stmt_idx
+                    );
+                }
+                let comms = comms.unwrap();
+                verify_set_membership(&set, comms, &mut verifier).unwrap();
+            }
+
+            for (stmt_idx, set) in set_non_mem_bp {
+                let comms = bp_proof.statement_commitments.remove(&stmt_idx);
+                // TODO: use `ok_or` on the option
+                if comms.is_none() {
+                    panic!(
+                        "BulletproofsProof commitments not found in for statement index {}",
+                        stmt_idx
+                    );
+                }
+                let comms = comms.unwrap();
+                verify_set_non_membership(&set, comms, &mut verifier).unwrap();
+            }
+
+            verifier
+                .verify(&bp_proof.proof, &gens.g, &gens.h, &gens.G, &gens.H)
+                .unwrap();
+            transcript.challenge_scalar("final challenge".as_bytes())
+        } else {
+            FieldElement::from_msg_hash(&challenge_bytes)
+        };
 
     for (stmt_idx, stmt) in proof_spec.statements.into_iter().enumerate() {
         match stmt {
@@ -864,6 +954,57 @@ pub fn verify_proof(mut proof_spec: ProofSpec, mut proof: Proof, label: &'static
         }
     }
     true
+}
+
+/// Update witnesses for various bulletproof statements
+fn update_bp_witnesses(
+    stmt_idx: usize,
+    messages: &[FieldElement],
+    revealed_messages: &HashMap<usize, FieldElement>,
+    blindings: &[FieldElement],
+    range_proof_bp_refs: &HashMap<MessageRef, usize>,
+    set_mem_bp_refs: &HashMap<MessageRef, usize>,
+    set_non_mem_bp_refs: &HashMap<MessageRef, usize>,
+    range_proof_bp_wit: &mut HashMap<usize, RangeProofBPWitness>,
+    set_mem_bp_wit: &mut HashMap<usize, SetMemBPWitness>,
+    set_non_mem_bp_wit: &mut HashMap<usize, SetNonMemBPWitness>,
+) {
+    for i in 0..messages.len() {
+        if revealed_messages.contains_key(&i) {
+            continue;
+        }
+        let msg_ref = MessageRef {
+            statement_idx: stmt_idx,
+            message_idx: i,
+        };
+        if range_proof_bp_refs.contains_key(&msg_ref) {
+            // TODO: Add a to_u64 in FieldElement
+            let val = messages[i].to_bignum().w[0] as u64;
+            range_proof_bp_wit.insert(
+                range_proof_bp_refs[&msg_ref],
+                RangeProofBPWitness {
+                    val,
+                    blinding: blindings[i].clone(),
+                },
+            );
+        } else if set_mem_bp_refs.contains_key(&msg_ref) {
+            set_mem_bp_wit.insert(
+                set_mem_bp_refs[&msg_ref],
+                SetMemBPWitness {
+                    val: messages[i].clone(),
+                    blinding: blindings[i].clone(),
+                },
+            );
+        } else if set_non_mem_bp_refs.contains_key(&msg_ref) {
+            set_non_mem_bp_wit.insert(
+                set_non_mem_bp_refs[&msg_ref],
+                SetNonMemBPWitness {
+                    val: messages[i].clone(),
+                    blinding: blindings[i].clone(),
+                },
+            );
+        }
+    }
 }
 
 /// Merge equalities of various statements such that the final array of equality sets are disjoint.
@@ -1514,6 +1655,133 @@ mod tests {
         let mut statement_witnesses = HashMap::new();
         statement_witnesses.insert(0, witness_PS);
         statement_witnesses.insert(1, witness_BBS);
+
+        use rand::rngs::OsRng;
+        use rand::Rng;
+
+        let mut rng = rand::thread_rng();
+
+        let proof = create_proof::<ThreadRng>(
+            proof_spec.clone(),
+            Witness {
+                statement_witnesses,
+            },
+            "test".as_bytes(),
+        );
+
+        // Verifier's part
+        assert!(verify_proof(proof_spec, proof, "test".as_bytes()));
+    }
+
+    #[test]
+    fn test_proof_of_knowledge_of_ps_sig_and_set_membership_over_1_message() {
+        // Prove knowledge of a PS signature and prove that one of the attribute is member of a given set
+        let min = 5;
+        let max = 25;
+        // PS sig
+        let count_msgs = 5;
+        let params = PSParams::new("test".as_bytes());
+        let (vk, sk) = PSKeygen(count_msgs, &params);
+        let mut msgs_for_PS_sig = FieldElementVector::random(count_msgs);
+
+        let set = (0..10).map(|_| FieldElement::random()).collect::<Vec<_>>();
+        // This message will be used in set membership test
+        msgs_for_PS_sig[2] = set[5].clone();
+
+        let ps_sig = PSSig::new(msgs_for_PS_sig.as_slice(), &sk, &params).unwrap();
+        assert!(ps_sig
+            .verify(msgs_for_PS_sig.as_slice(), &vk, &params)
+            .unwrap());
+
+        let stmt_ps_sig = PoKSignaturePS {
+            pk: vk.clone(),
+            params: params.clone(),
+            revealed_messages: HashMap::new(),
+        };
+
+        let stmt_set_mem = SetMemBulletproof {
+            message_ref: MessageRef {
+                statement_idx: 0,
+                message_idx: 2,
+            },
+            set,
+        };
+
+        let mut proof_spec = ProofSpec::new();
+        proof_spec.add_statement(Statement::PoKSignaturePS(stmt_ps_sig.clone()));
+        proof_spec.add_statement(Statement::SetMemBulletproof(stmt_set_mem.clone()));
+
+        // Prover's part
+
+        let witness_PS = StatementWitness::SignaturePS(SignaturePSWitness {
+            sig: ps_sig,
+            messages: msgs_for_PS_sig.iter().map(|f| f.clone()).collect(),
+        });
+        let mut statement_witnesses = HashMap::new();
+        statement_witnesses.insert(0, witness_PS);
+
+        use rand::rngs::OsRng;
+        use rand::Rng;
+
+        let mut rng = rand::thread_rng();
+
+        let proof = create_proof::<ThreadRng>(
+            proof_spec.clone(),
+            Witness {
+                statement_witnesses,
+            },
+            "test".as_bytes(),
+        );
+
+        // Verifier's part
+        assert!(verify_proof(proof_spec, proof, "test".as_bytes()));
+    }
+
+    #[test]
+    fn test_proof_of_knowledge_of_ps_sig_and_set_non_membership_over_1_message() {
+        // Prove knowledge of a PS signature and prove that one of the attribute is not a member of a given set
+        let min = 5;
+        let max = 25;
+        // PS sig
+        let count_msgs = 5;
+        let params = PSParams::new("test".as_bytes());
+        let (vk, sk) = PSKeygen(count_msgs, &params);
+        let mut msgs_for_PS_sig = FieldElementVector::random(count_msgs);
+
+        // Randomly chosen set elements so rare chance of collision with `msgs_for_PS_sig`
+        let set = (0..10).map(|_| FieldElement::random()).collect::<Vec<_>>();
+
+        let ps_sig = PSSig::new(msgs_for_PS_sig.as_slice(), &sk, &params).unwrap();
+        assert!(ps_sig
+            .verify(msgs_for_PS_sig.as_slice(), &vk, &params)
+            .unwrap());
+
+        let stmt_ps_sig = PoKSignaturePS {
+            pk: vk.clone(),
+            params: params.clone(),
+            revealed_messages: HashMap::new(),
+        };
+
+        let stmt_set_non_mem = SetNonMemBulletproof {
+            message_ref: MessageRef {
+                statement_idx: 0,
+                message_idx: 2,
+            },
+            set,
+        };
+
+        let mut proof_spec = ProofSpec::new();
+        proof_spec.add_statement(Statement::PoKSignaturePS(stmt_ps_sig.clone()));
+        proof_spec.add_statement(Statement::SetNonMemBulletproof(stmt_set_non_mem.clone()));
+
+        // Prover's part
+
+        let witness_PS = StatementWitness::SignaturePS(SignaturePSWitness {
+            sig: ps_sig,
+            messages: msgs_for_PS_sig.iter().map(|f| f.clone()).collect(),
+        });
+        let mut statement_witnesses = HashMap::new();
+        statement_witnesses.insert(0, witness_PS);
 
         use rand::rngs::OsRng;
         use rand::Rng;

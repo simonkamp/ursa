@@ -37,12 +37,12 @@ pub fn set_non_membership_gadget<CS: ConstraintSystem>(
 
 pub fn prove_set_non_membership<R: Rng + CryptoRng>(
     value: FieldElement,
-    randomness: Option<FieldElement>,
+    blinding: Option<FieldElement>,
     set: &[FieldElement],
     rng: Option<&mut R>,
     prover: &mut Prover,
 ) -> Result<Vec<G1>, R1CSError> {
-    check_for_blindings_or_rng!(randomness, rng)?;
+    check_for_blindings_or_rng!(blinding, rng)?;
 
     let set_length = set.len();
 
@@ -53,7 +53,7 @@ pub fn prove_set_non_membership<R: Rng + CryptoRng>(
     let value = FieldElement::from(value);
     let (com_value, var_value) = prover.commit(
         value.clone(),
-        randomness.unwrap_or_else(|| FieldElement::random_using_rng(rng.unwrap())),
+        blinding.unwrap_or_else(|| FieldElement::random_using_rng(rng.unwrap())),
     );
     comms.push(com_value);
 
@@ -105,7 +105,7 @@ pub fn verify_set_non_membership(
 /// Prove that difference between each set element and value is non-zero, hence value does not equal any set element.
 pub fn gen_proof_of_set_non_membership<R: Rng + CryptoRng>(
     value: FieldElement,
-    randomness: Option<FieldElement>,
+    blinding: Option<FieldElement>,
     set: &[FieldElement],
     rng: Option<&mut R>,
     transcript_label: &'static [u8],
@@ -117,7 +117,7 @@ pub fn gen_proof_of_set_non_membership<R: Rng + CryptoRng>(
     let mut prover_transcript = Transcript::new(transcript_label);
     let mut prover = Prover::new(&g, &h, &mut prover_transcript);
 
-    let comms = prove_set_non_membership(value, randomness, set, rng, &mut prover)?;
+    let comms = prove_set_non_membership(value, blinding, set, rng, &mut prover)?;
 
     let proof = prover.prove(G, H)?;
 
