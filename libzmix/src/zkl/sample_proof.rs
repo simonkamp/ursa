@@ -1,3 +1,4 @@
+use crate::bulletproofs::r1cs::gadgets::helper_constraints::poseidon::{PoseidonParams, SboxType};
 use amcl_wrapper::field_elem::{FieldElement, FieldElementVector};
 use amcl_wrapper::group_elem_g1::G1;
 use bulletproofs::r1cs::gadgets::bound_check::{prove_bounded_num, verify_bounded_num};
@@ -10,11 +11,11 @@ use bulletproofs::r1cs::Prover as BulletproofsProver;
 use bulletproofs::r1cs::R1CSProof;
 use bulletproofs::r1cs::Verifier as BulletproofsVerifier;
 use bulletproofs::transcript::TranscriptProtocol;
-use signatures::bbs::keys::PublicKey as BBSVerkey;
 use merlin::Transcript;
 use rand::prelude::ThreadRng;
 use rand::rngs::OsRng;
 use rand::{CryptoRng, Rng};
+use signatures::bbs::keys::PublicKey as BBSVerkey;
 use signatures::bbs::pok_sig::{PoKOfSignature as PoKBBSSig, PoKOfSignatureProof as PoKBBSigProof};
 use signatures::bbs::signature::Signature as BBSSig;
 use signatures::ps::keys::{Params as PSParams, Verkey as PSVerkey};
@@ -66,6 +67,7 @@ pub enum Statement {
     RangeProofBulletproof(RangeProofBulletproof),
     SetMemBulletproof(SetMemBulletproof),
     SetNonMemBulletproof(SetNonMemBulletproof),
+    Revocation4AryTreeBulletproof(Revocation4AryTreeBulletproof),
     //RangeProofPSBulletproof(RangeProofPSBulletproof<'a>),
     // Input validation needed to ensure no conflicts between equality and inequality
     // Inequality(Vec<Ref>),
@@ -115,6 +117,16 @@ pub struct SetMemBulletproof {
 pub struct SetNonMemBulletproof {
     message_ref: MessageRef,
     set: Vec<FieldElement>,
+}
+
+#[derive(Clone)]
+pub struct Revocation4AryTreeBulletproof {
+    message_ref: MessageRef,
+    tree_depth: usize,
+    root: FieldElement,
+    // Below might change after abstracting hash constraints from gadget
+    hash_params: PoseidonParams,
+    sbox_type: SboxType,
 }
 
 trait PoKSignature {
@@ -219,10 +231,12 @@ impl ProofSpec {
     // TODO: Maybe each statement should have an associated unique id which can be a counter
     // so that referencing statements in the proving/verifying code is easy
     pub fn add_statement(&mut self, statement: Statement) {
+        // TODO: Input validation: Check that each statement using a reference (with `MessageRef`) has a valid
+        // reference, so the statement with index exists and so does the message inside it.
         self.statements.push(statement)
     }
 
-    /// Check if there is any statement for Bulletproofs. Helps is deciding whether to create
+    /// Check if there is any statement for Bulletproofs. Helps is deciding whether to create/load
     /// Bulletproof generators
     // TODO: A better alternative would be to return the number of constraints in all statements
     // combined.
@@ -426,6 +440,11 @@ struct SetNonMemBPWitness {
     pub blinding: FieldElement,
 }
 
+/*struct LeafInclusionBPWitness {
+    pub leaf_val: FieldElement,
+    pub blinding: FieldElement,
+}*/
+
 pub fn create_proof<R: Rng + CryptoRng>(
     mut proof_spec: ProofSpec,
     mut witness: Witness,
@@ -457,6 +476,7 @@ pub fn create_proof<R: Rng + CryptoRng>(
     let mut range_proof_bp_refs = HashMap::<MessageRef, usize>::new();
     let mut set_mem_bp_refs = HashMap::<MessageRef, usize>::new();
     let mut set_non_mem_bp_refs = HashMap::<MessageRef, usize>::new();
+    let mut leaf_inclusion_4_ary_refs = HashMap::<MessageRef, usize>::new();
 
     // Bulletproof statements
     // XXX: What if a Bulletproof statement needed referenced several statement
@@ -464,11 +484,13 @@ pub fn create_proof<R: Rng + CryptoRng>(
     let mut range_proof_bp_wit = HashMap::new();
     let mut set_mem_bp_wit = HashMap::new();
     let mut set_non_mem_bp_wit = HashMap::new();
+    let mut leaf_inclusion_4_ary_bp_wit = HashMap::new();
 
     // Vec<(statement index, BP statement, BP witness)>
     let mut range_proof_bp = vec![];
     let mut set_mem_bp = vec![];
     let mut set_non_mem_bp = vec![];
+    let mut leaf_inclusion_4_ary_bp = vec![];
 
     // Process self attested claims
     let mut self_attest_stmt_bytes = vec![];
@@ -483,14 +505,17 @@ pub fn create_proof<R: Rng + CryptoRng>(
                 // arbitrarily large.
                 self_attest_stmt_bytes.append(b);
             }
-            Statement::RangeProofBulletproof(rp) => {
-                range_proof_bp_refs.insert(rp.message_ref.clone(), i);
+            Statement::RangeProofBulletproof(p) => {
+                range_proof_bp_refs.insert(p.message_ref.clone(), i);
             }
-            Statement::SetMemBulletproof(rp) => {
-                set_mem_bp_refs.insert(rp.message_ref.clone(), i);
+            Statement::SetMemBulletproof(p) => {
+                set_mem_bp_refs.insert(p.message_ref.clone(), i);
             }
-            Statement::SetNonMemBulletproof(rp) => {
-                set_non_mem_bp_refs.insert(rp.message_ref.clone(), i);
+            Statement::SetNonMemBulletproof(p) => {
+                set_non_mem_bp_refs.insert(p.message_ref.clone(), i);
+            }
+            Statement::Revocation4AryTreeBulletproof(p) => {
+                set_non_mem_bp_refs.insert(p.message_ref.clone(), i);
             }
             _ => (),
         }
@@ -520,9 +545,11 @@ pub fn create_proof<R: Rng + CryptoRng>(
                             &range_proof_bp_refs,
                             &set_mem_bp_refs,
                             &set_non_mem_bp_refs,
+                            &leaf_inclusion_4_ary_refs,
                             &mut range_proof_bp_wit,
                             &mut set_mem_bp_wit,
                             &mut set_non_mem_bp_wit,
+                            &mut leaf_inclusion_4_ary_bp_wit,
                         );
                         let mut pm = PSSigProofModule::new(stmt_idx, s);
                         pm.blindings = Some(blindings);
@@ -977,9 +1004,11 @@ fn update_bp_witnesses(
     range_proof_bp_refs: &HashMap<MessageRef, usize>,
     set_mem_bp_refs: &HashMap<MessageRef, usize>,
     set_non_mem_bp_refs: &HashMap<MessageRef, usize>,
+    leaf_inclusion_4_ary_refs: &HashMap<MessageRef, usize>,
     range_proof_bp_wit: &mut HashMap<usize, RangeProofBPWitness>,
     set_mem_bp_wit: &mut HashMap<usize, SetMemBPWitness>,
     set_non_mem_bp_wit: &mut HashMap<usize, SetNonMemBPWitness>,
+    leaf_inclusion_4_ary_bp_wit: &mut HashMap<usize, SetNonMemBPWitness>,
 ) {
     for i in 0..messages.len() {
         if revealed_messages.contains_key(&i) {
@@ -1140,6 +1169,11 @@ fn check_responses_for_equality(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bulletproofs::r1cs::gadgets::helper_constraints::sparse_merkle_tree_4_ary::{
+        DBVal_4_ary, ProofNode_4_ary, VanillaSparseMerkleTree_4,
+    };
+    use crate::bulletproofs::r1cs::gadgets::merkle_tree_hash::PoseidonHash_4;
+    use crate::bulletproofs::utils::hash_db::InMemoryHashDb;
     use amcl_wrapper::field_elem::FieldElementVector;
     use failure::_core::cmp::min;
     use rand::rngs::OsRng;
@@ -1572,8 +1606,8 @@ mod tests {
         };
 
         let mut proof_spec = ProofSpec::new();
-        proof_spec.add_statement(Statement::PoKSignaturePS(stmt_ps_sig.clone()));
-        proof_spec.add_statement(Statement::RangeProofBulletproof(stmt_range_proof.clone()));
+        proof_spec.add_statement(Statement::PoKSignaturePS(stmt_ps_sig));
+        proof_spec.add_statement(Statement::RangeProofBulletproof(stmt_range_proof));
 
         // Prover's part
 
@@ -1694,11 +1728,11 @@ mod tests {
         };
 
         let mut proof_spec = ProofSpec::new();
-        proof_spec.add_statement(Statement::PoKSignaturePS(stmt_ps_sig.clone()));
-        proof_spec.add_statement(Statement::PoKSignatureBBS(stmt_bbs_sig.clone()));
-        proof_spec.add_statement(Statement::RangeProofBulletproof(stmt_range_proof_1.clone()));
-        proof_spec.add_statement(Statement::RangeProofBulletproof(stmt_range_proof_2.clone()));
-        proof_spec.add_statement(Statement::RangeProofBulletproof(stmt_range_proof_3.clone()));
+        proof_spec.add_statement(Statement::PoKSignaturePS(stmt_ps_sig));
+        proof_spec.add_statement(Statement::PoKSignatureBBS(stmt_bbs_sig));
+        proof_spec.add_statement(Statement::RangeProofBulletproof(stmt_range_proof_1));
+        proof_spec.add_statement(Statement::RangeProofBulletproof(stmt_range_proof_2));
+        proof_spec.add_statement(Statement::RangeProofBulletproof(stmt_range_proof_3));
 
         // Prover's part
 
@@ -1780,8 +1814,8 @@ mod tests {
         };
 
         let mut proof_spec = ProofSpec::new();
-        proof_spec.add_statement(Statement::PoKSignaturePS(stmt_ps_sig.clone()));
-        proof_spec.add_statement(Statement::SetMemBulletproof(stmt_set_mem.clone()));
+        proof_spec.add_statement(Statement::PoKSignaturePS(stmt_ps_sig));
+        proof_spec.add_statement(Statement::SetMemBulletproof(stmt_set_mem));
 
         // Prover's part
 
@@ -1855,8 +1889,8 @@ mod tests {
         };
 
         let mut proof_spec = ProofSpec::new();
-        proof_spec.add_statement(Statement::PoKSignaturePS(stmt_ps_sig.clone()));
-        proof_spec.add_statement(Statement::SetNonMemBulletproof(stmt_set_non_mem.clone()));
+        proof_spec.add_statement(Statement::PoKSignaturePS(stmt_ps_sig));
+        proof_spec.add_statement(Statement::SetNonMemBulletproof(stmt_set_non_mem));
 
         // Prover's part
 
@@ -2019,15 +2053,15 @@ mod tests {
         };
 
         let mut proof_spec = ProofSpec::new();
-        proof_spec.add_statement(Statement::PoKSignaturePS(stmt_ps_sig.clone()));
-        proof_spec.add_statement(Statement::PoKSignatureBBS(stmt_bbs_sig.clone()));
-        proof_spec.add_statement(Statement::RangeProofBulletproof(stmt_range_proof_1.clone()));
-        proof_spec.add_statement(Statement::RangeProofBulletproof(stmt_range_proof_2.clone()));
-        proof_spec.add_statement(Statement::SetMemBulletproof(stmt_set_mem_1.clone()));
-        proof_spec.add_statement(Statement::SetMemBulletproof(stmt_set_mem_2.clone()));
-        proof_spec.add_statement(Statement::SetMemBulletproof(stmt_set_mem_3.clone()));
-        proof_spec.add_statement(Statement::SetNonMemBulletproof(stmt_set_non_mem_1.clone()));
-        proof_spec.add_statement(Statement::SetNonMemBulletproof(stmt_set_non_mem_2.clone()));
+        proof_spec.add_statement(Statement::PoKSignaturePS(stmt_ps_sig));
+        proof_spec.add_statement(Statement::PoKSignatureBBS(stmt_bbs_sig));
+        proof_spec.add_statement(Statement::RangeProofBulletproof(stmt_range_proof_1));
+        proof_spec.add_statement(Statement::RangeProofBulletproof(stmt_range_proof_2));
+        proof_spec.add_statement(Statement::SetMemBulletproof(stmt_set_mem_1));
+        proof_spec.add_statement(Statement::SetMemBulletproof(stmt_set_mem_2));
+        proof_spec.add_statement(Statement::SetMemBulletproof(stmt_set_mem_3));
+        proof_spec.add_statement(Statement::SetNonMemBulletproof(stmt_set_non_mem_1));
+        proof_spec.add_statement(Statement::SetNonMemBulletproof(stmt_set_non_mem_2));
 
         // Prover's part
 
@@ -2044,6 +2078,121 @@ mod tests {
         let mut statement_witnesses = HashMap::new();
         statement_witnesses.insert(0, witness_PS);
         statement_witnesses.insert(1, witness_BBS);
+
+        let rng = rand::thread_rng();
+
+        // Both the prover and verifier should use this label for creating/verifying proof
+        let proof_label = "test_proof_label".as_bytes();
+        // Both the prover and verifier should use this label for creating Bulletproof generators
+        let bulletproof_label = "test_bulletproof_label".as_bytes();
+
+        let gens: BulletproofsGens;
+        let gens_ref = if proof_spec.has_bulletproof_statements() {
+            gens = BulletproofsGens::new(proof_label, 512);
+            Some(&gens)
+        } else {
+            None
+        };
+
+        let proof = create_proof::<ThreadRng>(
+            proof_spec.clone(),
+            Witness {
+                statement_witnesses,
+            },
+            proof_label,
+            gens_ref,
+        );
+
+        // Verifier's part
+        assert!(verify_proof(proof_spec, proof, proof_label, gens_ref));
+    }
+
+    #[test]
+    fn test_proof_of_knowledge_of_ps_sig_and_merkle_tree_leaf_inclusion_with_bulletproof() {
+        // Prove knowledge of PS sig and a message being revoked.
+        // PS sig
+        let count_msgs = 5;
+        let params = PSParams::new("test".as_bytes());
+        let (vk, sk) = PSKeygen(count_msgs, &params);
+        let mut msgs_for_PS_sig = FieldElementVector::random(count_msgs);
+        // prover's leaf index is 5
+        let prover_leaf_index = FieldElement::from(5);
+        // Index 1 is reserved for revocation. This choice is arbitrary.
+        msgs_for_PS_sig[1] = prover_leaf_index.clone();
+
+        let ps_sig = PSSig::new(msgs_for_PS_sig.as_slice(), &sk, &params).unwrap();
+        assert!(ps_sig
+            .verify(msgs_for_PS_sig.as_slice(), &vk, &params)
+            .unwrap());
+
+        // Create and update tree. This part will be done by the issuer. The issuer might host the
+        // tree himself or on a ledger
+        let mut db = InMemoryHashDb::<DBVal_4_ary>::new();
+        let width = 5;
+        let (full_b, full_e, partial_rounds) = (4, 4, 56);
+        let total_rounds = full_b + partial_rounds + full_e;
+        let hash_params = PoseidonParams::new(width, full_b, full_e, partial_rounds).unwrap();
+        let tree_depth = 3; // 64 leaves, for testing
+        let hash_func = PoseidonHash_4 {
+            params: &hash_params,
+            sbox: &SboxType::Quint,
+        };
+        let mut tree = VanillaSparseMerkleTree_4::new(&hash_func, tree_depth, &mut db).unwrap();
+
+        // Assign 10 leaves to 1, 0 means revoked, prover will prove non revoked
+        for i in 1..=10 {
+            let rev_index = FieldElement::from(i as u32);
+            tree.update(&rev_index, FieldElement::one(), &mut db)
+                .unwrap();
+        }
+
+        let mut merkle_proof_vec = Vec::<ProofNode_4_ary>::new();
+        let mut merkle_proof = Some(merkle_proof_vec);
+        assert_eq!(
+            prover_leaf_index,
+            tree.get(&prover_leaf_index, &mut merkle_proof, &db)
+                .unwrap()
+        );
+        merkle_proof_vec = merkle_proof.unwrap();
+        assert!(tree
+            .verify_proof(
+                &prover_leaf_index,
+                &FieldElement::one(),
+                &merkle_proof_vec,
+                Some(&tree.root)
+            )
+            .unwrap());
+
+        let stmt_ps_sig = PoKSignaturePS {
+            pk: vk.clone(),
+            params: params.clone(),
+            revealed_messages: HashMap::new(),
+        };
+
+        let stmt_leaf_incl_bp = Revocation4AryTreeBulletproof {
+            message_ref: MessageRef {
+                statement_idx: 0,
+                message_idx: 1,
+            },
+            tree_depth,
+            root: tree.root.clone(),
+            // Below might change after abstracting hash constraints from gadget
+            hash_params: hash_params.clone(),
+            sbox_type: SboxType::Quint,
+        };
+
+        let mut proof_spec = ProofSpec::new();
+        proof_spec.add_statement(Statement::PoKSignaturePS(stmt_ps_sig));
+        proof_spec.add_statement(Statement::Revocation4AryTreeBulletproof(stmt_leaf_incl_bp));
+
+        // Prover's part
+
+        let witness_PS = StatementWitness::SignaturePS(SignaturePSWitness {
+            sig: ps_sig,
+            messages: msgs_for_PS_sig.iter().map(|f| f.clone()).collect(),
+        });
+        let mut statement_witnesses = HashMap::new();
+        statement_witnesses.insert(0, witness_PS);
 
         let rng = rand::thread_rng();
 
