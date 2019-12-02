@@ -222,6 +222,22 @@ impl ProofSpec {
     pub fn add_statement(&mut self, statement: Statement) {
         self.statements.push(statement)
     }
+
+    /// Check if there is any statement for Bulletproofs. Helps is deciding whether to create
+    /// Bulletproof generators
+    // TODO: A better alternative would be to return the number of constraints in all statements
+    // combined.
+    pub fn has_bulletproof_statements(&self) -> bool {
+        for stmt in &self.statements {
+            match stmt {
+                Statement::RangeProofBulletproof(_) => return true,
+                Statement::SetMemBulletproof(_) => return true,
+                Statement::SetNonMemBulletproof(_) => return true,
+                _ => (),
+            }
+        }
+        return false;
+    }
 }
 
 pub struct Proof {
@@ -415,6 +431,7 @@ pub fn create_proof<R: Rng + CryptoRng>(
     mut proof_spec: ProofSpec,
     mut witness: Witness,
     label: &'static [u8],
+    bulleproof_gens: Option<&BulletproofsGens>,
 ) -> Proof {
     let mut pms: Vec<Box<dyn ProofModule>> = vec![];
 
@@ -589,13 +606,15 @@ pub fn create_proof<R: Rng + CryptoRng>(
         || set_non_mem_bp_refs.len() > 0)
     {
         // XXX: Will have just 1 prover for now.
+        // TODO: Fix number of generators, this should be flexible
+        if bulleproof_gens.is_none() {
+            panic!("Need generators for bulletproofs")
+        }
+        let gens = bulleproof_gens.unwrap();
+
         let mut transcript = Transcript::new(label);
         transcript.append_message("seeding".as_bytes(), comm_bytes.as_slice());
-        // TODO: Fix number of generators, this should be flexible
-        // TODO: The label can be different and should probably be fixed for all proofs
-        // TODO: Allow those generators to be passed as argument to proof creation since they will
-        // be generated once and stored.
-        let gens = BulletproofsGens::new(label, 512);
+
         let (statement_commitments, proof) = {
             let mut prover = BulletproofsProver::new(&gens.g, &gens.h, &mut transcript);
             let mut commitments = HashMap::new();
@@ -666,7 +685,12 @@ pub fn create_proof<R: Rng + CryptoRng>(
     Proof { statement_proofs }
 }
 
-pub fn verify_proof(mut proof_spec: ProofSpec, mut proof: Proof, label: &'static [u8]) -> bool {
+pub fn verify_proof(
+    mut proof_spec: ProofSpec,
+    mut proof: Proof,
+    label: &'static [u8],
+    bulleproof_gens: Option<&BulletproofsGens>,
+) -> bool {
     // Iterate over statements and check whether refs in equality are valid?
     let mut equalities = Vec::<HashSet<MessageRef>>::new();
     let mut statements = vec![];
@@ -809,13 +833,14 @@ pub fn verify_proof(mut proof_spec: ProofSpec, mut proof: Proof, label: &'static
     let challenge =
         if (range_proof_bp.len() > 0 || set_mem_bp.len() > 0 || set_non_mem_bp.len() > 0) {
             // XXX: Will have just 1 verifier for now.
+            // TODO: Fix number of generators, this should be flexible
+            if bulleproof_gens.is_none() {
+                panic!("Need generators for bulletproofs")
+            }
+            let gens = bulleproof_gens.unwrap();
+
             let mut transcript = Transcript::new(label);
             transcript.append_message("seeding".as_bytes(), challenge_bytes.as_slice());
-            // TODO: Fix number of generators, this should be flexible
-            // TODO: The label can be different and should probably be fixed for all proofs
-            // TODO: Allow those generators to be passed as argument to proof creation since they will
-            // be generated once and stored.
-            let gens = BulletproofsGens::new(label, 512);
             let mut verifier = BulletproofsVerifier::new(&mut transcript);
             let mut bp_proof: Option<&mut BulletproofsProof> = None;
             for p in proof.statement_proofs.iter_mut() {
@@ -1117,6 +1142,8 @@ mod tests {
     use super::*;
     use amcl_wrapper::field_elem::FieldElementVector;
     use failure::_core::cmp::min;
+    use rand::rngs::OsRng;
+    use rand::Rng;
     use serde_json::error::ErrorCode::Message;
     use signatures::bbs::keys::generate as BBSKeygen;
     use signatures::ps::keys::keygen as PSKeygen;
@@ -1184,22 +1211,32 @@ mod tests {
         statement_witnesses.insert(0, witness_PS);
         statement_witnesses.insert(1, witness_BBS);
 
-        use rand::rngs::OsRng;
-        use rand::Rng;
+        let rng = rand::thread_rng();
 
-        let mut rng = rand::thread_rng();
+        // Both the prover and verifier should use this label for creating/verifying proof
+        let proof_label = "test_proof_label".as_bytes();
+        // Both the prover and verifier should use this label for creating Bulletproof generators
+        let bulletproof_label = "test_bulletproof_label".as_bytes();
 
+        let gens: BulletproofsGens;
+        let gens_ref = if proof_spec.has_bulletproof_statements() {
+            gens = BulletproofsGens::new(proof_label, 512);
+            Some(&gens)
+        } else {
+            None
+        };
         // TODO: Is this the right way to do things
         let proof = create_proof::<ThreadRng>(
             proof_spec.clone(),
             Witness {
                 statement_witnesses,
             },
-            "test".as_bytes(),
+            proof_label,
+            gens_ref,
         );
 
         // Verifier's part
-        assert!(verify_proof(proof_spec, proof, "test".as_bytes()));
+        assert!(verify_proof(proof_spec, proof, proof_label, gens_ref));
     }
 
     #[test]
@@ -1365,21 +1402,32 @@ mod tests {
         statement_witnesses.insert(1, witness_PS_2);
         statement_witnesses.insert(2, witness_BBS);
 
-        use rand::rngs::OsRng;
-        use rand::Rng;
+        let rng = rand::thread_rng();
 
-        let mut rng = rand::thread_rng();
+        // Both the prover and verifier should use this label for creating/verifying proof
+        let proof_label = "test_proof_label".as_bytes();
+        // Both the prover and verifier should use this label for creating Bulletproof generators
+        let bulletproof_label = "test_bulletproof_label".as_bytes();
+
+        let gens: BulletproofsGens;
+        let gens_ref = if proof_spec.has_bulletproof_statements() {
+            gens = BulletproofsGens::new(proof_label, 512);
+            Some(&gens)
+        } else {
+            None
+        };
 
         let proof = create_proof::<ThreadRng>(
             proof_spec.clone(),
             Witness {
                 statement_witnesses,
             },
-            "test".as_bytes(),
+            proof_label,
+            gens_ref,
         );
 
         // Verifier's part
-        assert!(verify_proof(proof_spec, proof, "test".as_bytes()));
+        assert!(verify_proof(proof_spec, proof, proof_label, gens_ref));
     }
 
     #[test]
@@ -1459,21 +1507,32 @@ mod tests {
         statement_witnesses.insert(0, witness_PS_1);
         statement_witnesses.insert(2, witness_PS_2);
 
-        use rand::rngs::OsRng;
-        use rand::Rng;
+        let rng = rand::thread_rng();
 
-        let mut rng = rand::thread_rng();
+        // Both the prover and verifier should use this label for creating/verifying proof
+        let proof_label = "test_proof_label".as_bytes();
+        // Both the prover and verifier should use this label for creating Bulletproof generators
+        let bulletproof_label = "test_bulletproof_label".as_bytes();
+
+        let gens: BulletproofsGens;
+        let gens_ref = if proof_spec.has_bulletproof_statements() {
+            gens = BulletproofsGens::new(proof_label, 512);
+            Some(&gens)
+        } else {
+            None
+        };
 
         let proof = create_proof::<ThreadRng>(
             proof_spec.clone(),
             Witness {
                 statement_witnesses,
             },
-            "test".as_bytes(),
+            proof_label,
+            gens_ref,
         );
 
         // Verifier's part
-        assert!(verify_proof(proof_spec, proof, "test".as_bytes()));
+        assert!(verify_proof(proof_spec, proof, proof_label, gens_ref));
     }
 
     #[test]
@@ -1525,21 +1584,30 @@ mod tests {
         let mut statement_witnesses = HashMap::new();
         statement_witnesses.insert(0, witness_PS);
 
-        use rand::rngs::OsRng;
-        use rand::Rng;
+        // Both the prover and verifier should use this label for creating/verifying proof
+        let proof_label = "test_proof_label".as_bytes();
+        // Both the prover and verifier should use this label for creating Bulletproof generators
+        let bulletproof_label = "test_bulletproof_label".as_bytes();
 
-        let mut rng = rand::thread_rng();
+        let gens: BulletproofsGens;
+        let gens_ref = if proof_spec.has_bulletproof_statements() {
+            gens = BulletproofsGens::new(proof_label, 512);
+            Some(&gens)
+        } else {
+            None
+        };
 
         let proof = create_proof::<ThreadRng>(
             proof_spec.clone(),
             Witness {
                 statement_witnesses,
             },
-            "test".as_bytes(),
+            proof_label,
+            gens_ref,
         );
 
         // Verifier's part
-        assert!(verify_proof(proof_spec, proof, "test".as_bytes()));
+        assert!(verify_proof(proof_spec, proof, proof_label, gens_ref));
     }
 
     #[test]
@@ -1648,21 +1716,32 @@ mod tests {
         statement_witnesses.insert(0, witness_PS);
         statement_witnesses.insert(1, witness_BBS);
 
-        use rand::rngs::OsRng;
-        use rand::Rng;
+        let rng = rand::thread_rng();
 
-        let mut rng = rand::thread_rng();
+        // Both the prover and verifier should use this label for creating/verifying proof
+        let proof_label = "test_proof_label".as_bytes();
+        // Both the prover and verifier should use this label for creating Bulletproof generators
+        let bulletproof_label = "test_bulletproof_label".as_bytes();
+
+        let gens: BulletproofsGens;
+        let gens_ref = if proof_spec.has_bulletproof_statements() {
+            gens = BulletproofsGens::new(proof_label, 512);
+            Some(&gens)
+        } else {
+            None
+        };
 
         let proof = create_proof::<ThreadRng>(
             proof_spec.clone(),
             Witness {
                 statement_witnesses,
             },
-            "test".as_bytes(),
+            proof_label,
+            gens_ref,
         );
 
         // Verifier's part
-        assert!(verify_proof(proof_spec, proof, "test".as_bytes()));
+        assert!(verify_proof(proof_spec, proof, proof_label, gens_ref));
     }
 
     #[test]
@@ -1713,21 +1792,32 @@ mod tests {
         let mut statement_witnesses = HashMap::new();
         statement_witnesses.insert(0, witness_PS);
 
-        use rand::rngs::OsRng;
-        use rand::Rng;
+        let rng = rand::thread_rng();
 
-        let mut rng = rand::thread_rng();
+        // Both the prover and verifier should use this label for creating/verifying proof
+        let proof_label = "test_proof_label".as_bytes();
+        // Both the prover and verifier should use this label for creating Bulletproof generators
+        let bulletproof_label = "test_bulletproof_label".as_bytes();
+
+        let gens: BulletproofsGens;
+        let gens_ref = if proof_spec.has_bulletproof_statements() {
+            gens = BulletproofsGens::new(proof_label, 512);
+            Some(&gens)
+        } else {
+            None
+        };
 
         let proof = create_proof::<ThreadRng>(
             proof_spec.clone(),
             Witness {
                 statement_witnesses,
             },
-            "test".as_bytes(),
+            proof_label,
+            gens_ref,
         );
 
         // Verifier's part
-        assert!(verify_proof(proof_spec, proof, "test".as_bytes()));
+        assert!(verify_proof(proof_spec, proof, proof_label, gens_ref));
     }
 
     #[test]
@@ -1739,7 +1829,7 @@ mod tests {
         let count_msgs = 5;
         let params = PSParams::new("test".as_bytes());
         let (vk, sk) = PSKeygen(count_msgs, &params);
-        let mut msgs_for_PS_sig = FieldElementVector::random(count_msgs);
+        let msgs_for_PS_sig = FieldElementVector::random(count_msgs);
 
         // Randomly chosen set elements so rare chance of collision with `msgs_for_PS_sig`
         let set = (0..10).map(|_| FieldElement::random()).collect::<Vec<_>>();
@@ -1777,21 +1867,32 @@ mod tests {
         let mut statement_witnesses = HashMap::new();
         statement_witnesses.insert(0, witness_PS);
 
-        use rand::rngs::OsRng;
-        use rand::Rng;
+        let rng = rand::thread_rng();
 
-        let mut rng = rand::thread_rng();
+        // Both the prover and verifier should use this label for creating/verifying proof
+        let proof_label = "test_proof_label".as_bytes();
+        // Both the prover and verifier should use this label for creating Bulletproof generators
+        let bulletproof_label = "test_bulletproof_label".as_bytes();
+
+        let gens: BulletproofsGens;
+        let gens_ref = if proof_spec.has_bulletproof_statements() {
+            gens = BulletproofsGens::new(proof_label, 512);
+            Some(&gens)
+        } else {
+            None
+        };
 
         let proof = create_proof::<ThreadRng>(
             proof_spec.clone(),
             Witness {
                 statement_witnesses,
             },
-            "test".as_bytes(),
+            proof_label,
+            gens_ref,
         );
 
         // Verifier's part
-        assert!(verify_proof(proof_spec, proof, "test".as_bytes()));
+        assert!(verify_proof(proof_spec, proof, proof_label, gens_ref));
     }
 
     #[test]
@@ -1944,21 +2045,32 @@ mod tests {
         statement_witnesses.insert(0, witness_PS);
         statement_witnesses.insert(1, witness_BBS);
 
-        use rand::rngs::OsRng;
-        use rand::Rng;
+        let rng = rand::thread_rng();
 
-        let mut rng = rand::thread_rng();
+        // Both the prover and verifier should use this label for creating/verifying proof
+        let proof_label = "test_proof_label".as_bytes();
+        // Both the prover and verifier should use this label for creating Bulletproof generators
+        let bulletproof_label = "test_bulletproof_label".as_bytes();
+
+        let gens: BulletproofsGens;
+        let gens_ref = if proof_spec.has_bulletproof_statements() {
+            gens = BulletproofsGens::new(proof_label, 512);
+            Some(&gens)
+        } else {
+            None
+        };
 
         let proof = create_proof::<ThreadRng>(
             proof_spec.clone(),
             Witness {
                 statement_witnesses,
             },
-            "test".as_bytes(),
+            proof_label,
+            gens_ref,
         );
 
         // Verifier's part
-        assert!(verify_proof(proof_spec, proof, "test".as_bytes()));
+        assert!(verify_proof(proof_spec, proof, proof_label, gens_ref));
     }
 
     #[test]
