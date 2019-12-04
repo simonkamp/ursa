@@ -15,7 +15,6 @@ use crate::r1cs::gadgets::helper_constraints::{
 use crate::r1cs::gadgets::merkle_tree_hash::{
     Arity4MerkleTreeHash, Arity4MerkleTreeHashConstraints,
 };
-use crate::r1cs::gadgets::merkle_tree_hash::Arity4MerkleTreeHash;
 use crate::utils::hash_db::HashDb;
 
 pub type DBVal_4_ary = [FieldElement; 4];
