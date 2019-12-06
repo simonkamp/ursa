@@ -105,25 +105,30 @@ pub trait Arity8MerkleTreeHashConstraints {
     ) -> Result<LinearCombination, R1CSError>;
 }
 
+#[derive(Clone, Debug)]
 pub struct MiMC_2<'a> {
     pub constants: &'a [FieldElement],
 }
 
+#[derive(Clone, Debug)]
 pub struct PoseidonHash_2<'a> {
     pub params: &'a PoseidonParams,
     pub sbox: &'a SboxType,
 }
 
+#[derive(Clone, Debug)]
 pub struct PoseidonHash_4<'a> {
     pub params: &'a PoseidonParams,
     pub sbox: &'a SboxType,
 }
 
+#[derive(Clone, Debug)]
 pub struct PoseidonHash_8<'a> {
     pub params: &'a PoseidonParams,
     pub sbox: &'a SboxType,
 }
 
+#[derive(Clone, Debug)]
 pub struct PoseidonHashConstraints<'a> {
     pub params: &'a PoseidonParams,
     pub sbox: &'a SboxType,

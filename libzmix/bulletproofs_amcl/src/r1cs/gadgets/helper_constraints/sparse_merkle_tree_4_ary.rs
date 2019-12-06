@@ -12,7 +12,6 @@ use super::{constrain_lc_with_scalar, get_byte_size};
 use crate::r1cs::gadgets::helper_constraints::{
     allocated_leaf_index_to_bytes, get_repr_in_power_2_base, LeafValueType,
 };
-use crate::r1cs::gadgets::merkle_tree_hash::Arity4MerkleTreeHash;
 use crate::r1cs::gadgets::merkle_tree_hash::{
     Arity4MerkleTreeHash, Arity4MerkleTreeHashConstraints,
 };
