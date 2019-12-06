@@ -12,7 +12,6 @@ use super::{constrain_lc_with_scalar, get_byte_size};
 use crate::r1cs::gadgets::helper_constraints::{
     allocated_leaf_index_to_bytes, get_repr_in_power_2_base, LeafValueType,
 };
-use crate::r1cs::gadgets::merkle_tree_hash::Arity4MerkleTreeHash;
 use crate::r1cs::gadgets::merkle_tree_hash::{
     Arity4MerkleTreeHash, Arity4MerkleTreeHashConstraints,
 };
@@ -48,13 +47,9 @@ where
         depth: usize,
         hash_db: &mut HashDb<DBVal_4_ary>,
     ) -> Result<VanillaSparseMerkleTree_4<'a, MTH>, BulletproofError> {
-        /// Hash for the each level of the tree when all leaves are same (choosing zero here arbitrarily).
-        /// Since all leaves are same, all nodes at the same level will have the same value.
-        let mut empty_tree_hashes: Vec<FieldElement> = vec![];
-        empty_tree_hashes.push(FieldElement::zero());
-        for i in 1..=depth {
-            let prev = &empty_tree_hashes[i - 1];
-            let input: Vec<FieldElement> = (0..4).map(|_| prev.clone()).collect();
+        let mut cur = FieldElement::zero();
+        for _ in 0..depth {
+            let input: Vec<FieldElement> = (0..4).map(|_| cur.clone()).collect();
             // Hash all 4 children at once
             let mut val: DBVal_4_ary = [
                 FieldElement::zero(),
@@ -63,19 +58,15 @@ where
                 FieldElement::zero(),
             ];
             val.clone_from_slice(input.as_slice());
-            let new = hash_func.hash(input)?;
-            let key = new.to_bytes();
-
+            cur = hash_func.hash(input)?;
+            let key = cur.to_bytes();
             hash_db.insert(key, val);
-            empty_tree_hashes.push(new);
         }
-
-        let root = empty_tree_hashes[depth].clone();
 
         Ok(VanillaSparseMerkleTree_4 {
             depth,
             hash_func,
-            root,
+            root: cur,
         })
     }
 

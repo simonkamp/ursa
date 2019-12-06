@@ -42,11 +42,9 @@ where
         depth: usize,
         hash_db: &mut HashDb<DBVal_8_ary>,
     ) -> Result<VanillaSparseMerkleTree_8<'a, MTH>, BulletproofError> {
-        let mut empty_tree_hashes: Vec<FieldElement> = vec![];
-        empty_tree_hashes.push(FieldElement::zero());
-        for i in 1..=depth {
-            let prev = &empty_tree_hashes[i - 1];
-            let inp: Vec<FieldElement> = (0..ARITY).map(|_| prev.clone()).collect();
+        let mut cur = FieldElement::zero();
+        for _ in 0..depth {
+            let inp: Vec<FieldElement> = (0..ARITY).map(|_| cur.clone()).collect();
             let mut input: DBVal_8_ary = [
                 FieldElement::zero(),
                 FieldElement::zero(),
@@ -59,19 +57,15 @@ where
             ];
             input.clone_from_slice(inp.as_slice());
             // Hash all 8 children at once
-            let new = hash_func.hash(inp)?;
-            let key = new.to_bytes();
-
+            cur = hash_func.hash(inp)?;
+            let key = cur.to_bytes();
             hash_db.insert(key, input);
-            empty_tree_hashes.push(new);
         }
-
-        let root = empty_tree_hashes[depth].clone();
 
         Ok(VanillaSparseMerkleTree_8 {
             depth,
             hash_func,
-            root,
+            root: cur,
         })
     }
 
