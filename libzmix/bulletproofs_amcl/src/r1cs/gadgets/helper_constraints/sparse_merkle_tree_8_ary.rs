@@ -89,7 +89,7 @@ where
         // Iterate over the base 8 digits
         for d in path {
             let mut sibling = siblings.pop().unwrap().to_vec();
-            // Insert the value at the position determined by the base 4 digit
+            // Insert the value at the position determined by the base 8 digit
             sibling.insert(d as usize, cur_val);
             let mut input: DBVal_8_ary = [
                 FieldElement::zero(),
@@ -156,7 +156,7 @@ where
 
         match proof {
             Some(v) => {
-                v.extend_from_slice(&proof_vec);
+                v.append(&mut proof_vec);
             }
             None => (),
         }
@@ -502,12 +502,12 @@ mod tests {
         };
         let mut tree = VanillaSparseMerkleTree_8::new(&hash_func, tree_depth, &mut db).unwrap();
 
-        for i in 1..20 {
+        for i in 1..100 {
             let s = FieldElement::from(i as u64);
             tree.update(&s, s.clone(), &mut db).unwrap();
         }
 
-        for i in 1..20 {
+        for i in 1..100 {
             let s = FieldElement::from(i as u32);
             assert_eq!(s, tree.get(&s, &mut None, &db).unwrap());
             let mut proof_vec = Vec::<ProofNode_8_ary>::new();
