@@ -1,5 +1,10 @@
 // Interface and an in-memory for key-value database where the key is bytes and is intended to be hash.
-// Used to store merkle tree nodes.
+// Used to store merkle tree nodes. The database stores all (internal and leaf) nodes of the tree as a map
+// `root node hash -> array of children nodes` and each of the children nodes can themselves be roots of more children nodes.
+// Since the height of the tree is fixed and same for all branches in the tree (its a sparse MT), you know when to stop
+// looking for more children nodes. The way you get the node at a leaf index is first looking up the root in the database and
+// picking the children node at the correct index (base 4 or base 8 depending on the tree) and then looking up that child node in
+// the database and so on.
 
 use crate::errors::{BulletproofError, BulletproofErrorKind};
 use std::collections::HashMap;

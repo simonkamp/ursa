@@ -2276,7 +2276,7 @@ mod tests {
     }
 
     #[test]
-    fn test_proof_of_knowledge_of_ps_sig_and_recovation_4_ary_with_bulletproof() {
+    fn test_proof_of_knowledge_of_ps_sig_and_revocation_4_ary_with_bulletproof() {
         // Prove knowledge of PS sig and being non revoked
         // PS sig
         let count_msgs = 5;
@@ -2365,7 +2365,7 @@ mod tests {
     }
 
     #[test]
-    fn test_proof_of_knowledge_of_ps_and_bbs_sig_and_recovation_4_ary_with_bulletproof() {
+    fn test_proof_of_knowledge_of_ps_and_bbs_sig_and_revocation_4_ary_with_bulletproof() {
         // Prove knowledge of a PS sig and a BBS sig and both of them being non revoked
         // PS sig
         let count_msgs = 5;
