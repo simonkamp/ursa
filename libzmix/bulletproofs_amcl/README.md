@@ -9,6 +9,20 @@ the Bulletproof needs to work over the same curve. The code is distributed under
 1. Uses [Apache Milagro](https://github.com/milagro-crypto/amcl) for finite field and elliptic curve operations.
 1. R1CS support is present though the API differs from dalek's. For gadgets, check [here](src/r1cs/gadgets).
 
+## Build and run
+
+By default, it builds for BLS12-381 curve. To build for different curves, turn off the default feature and use the appropriate cargo feature like below.
+
+To run tests for bn254 curve
+```
+cargo test --release --no-default-features --features=bn254
+```
+
+To run tests for ed25519 curve
+```
+cargo test --release --no-default-features --features=ed25519
+```
+
 ## License
 Licensed under either of
 - Apache License, Version 2.0, ([LICENSE-APACHE](./LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
