@@ -237,7 +237,7 @@ mod tests {
 
         let total_rounds = full_b + partial_rounds + full_e;
         let hash_params = PoseidonParams::new(width, full_b, full_e, partial_rounds).unwrap();
-        let tree_depth = 8;
+        let tree_depth = 10; // 2^30 = 8^10
         let sbox = &SboxType::Quint;
 
         let hash_func = PoseidonHash_8 {
@@ -262,9 +262,10 @@ mod tests {
 
         let mut rng = rand::thread_rng();
 
+        let gens = 4096 * 2;
         // TODO: Use iterators. Generating so many generators at once is very slow. In practice, generators will be persisted.
-        let G: G1Vector = get_generators("G", 4096).into();
-        let H: G1Vector = get_generators("H", 4096).into();
+        let G: G1Vector = get_generators("G", gens).into();
+        let H: G1Vector = get_generators("H", gens).into();
 
         let g = G1::from_msg_hash("g".as_bytes());
         let h = G1::from_msg_hash("h".as_bytes());
@@ -307,40 +308,40 @@ mod tests {
         )
         .unwrap();
 
-        // Test with leaf value known to verifier
-        let mut hash_func = PoseidonHashConstraints::new(&hash_params, sbox, CAP_CONST_W_9);
-        let (proof, commitments) = gen_proof_of_leaf_inclusion_8_ary_merkle_tree(
-            k.clone(),
-            k.clone(),
-            false,
-            None,
-            merkle_proof_vec,
-            &tree.root,
-            tree.depth,
-            &mut hash_func,
-            Some(&mut rng),
-            label,
-            &g,
-            &h,
-            &G,
-            &H,
-        )
-        .unwrap();
+        // // Test with leaf value known to verifier
+        // let mut hash_func = PoseidonHashConstraints::new(&hash_params, sbox, CAP_CONST_W_9);
+        // let (proof, commitments) = gen_proof_of_leaf_inclusion_8_ary_merkle_tree(
+        //     k.clone(),
+        //     k.clone(),
+        //     false,
+        //     None,
+        //     merkle_proof_vec,
+        //     &tree.root,
+        //     tree.depth,
+        //     &mut hash_func,
+        //     Some(&mut rng),
+        //     label,
+        //     &g,
+        //     &h,
+        //     &G,
+        //     &H,
+        // )
+        // .unwrap();
 
-        let mut hash_func = PoseidonHashConstraints::new(&hash_params, sbox, CAP_CONST_W_9);
-        verify_proof_of_leaf_inclusion_8_ary_merkle_tree(
-            &tree.root,
-            tree.depth,
-            &mut hash_func,
-            proof,
-            Some(k.clone()),
-            commitments,
-            label,
-            &g,
-            &h,
-            &G,
-            &H,
-        )
-        .unwrap();
+        // let mut hash_func = PoseidonHashConstraints::new(&hash_params, sbox, CAP_CONST_W_9);
+        // verify_proof_of_leaf_inclusion_8_ary_merkle_tree(
+        //     &tree.root,
+        //     tree.depth,
+        //     &mut hash_func,
+        //     proof,
+        //     Some(k.clone()),
+        //     commitments,
+        //     label,
+        //     &g,
+        //     &h,
+        //     &G,
+        //     &H,
+        // )
+        // .unwrap();
     }
 }

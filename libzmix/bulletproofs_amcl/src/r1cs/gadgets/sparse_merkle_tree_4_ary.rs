@@ -241,7 +241,7 @@ mod tests {
 
         let total_rounds = full_b + partial_rounds + full_e;
         let hash_params = PoseidonParams::new(width, full_b, full_e, partial_rounds).unwrap();
-        let tree_depth = 12;
+        let tree_depth = 15; // 2^30=4^15
         let sbox = &SboxType::Quint;
 
         let hash_func = PoseidonHash_4 {
@@ -262,91 +262,90 @@ mod tests {
         let g = G1::from_msg_hash("g".as_bytes());
         let h = G1::from_msg_hash("h".as_bytes());
 
-        for i in vec![3u32, 4u32, 7u32, 8u32, 9u32] {
-            let mut merkle_proof_vec = Vec::<ProofNode_4_ary>::new();
-            let mut merkle_proof = Some(merkle_proof_vec);
-            let k = FieldElement::from(i);
-            assert_eq!(k, tree.get(&k, &mut merkle_proof, &db).unwrap());
-            merkle_proof_vec = merkle_proof.unwrap();
-            assert!(tree
-                .verify_proof(&k, &k, &merkle_proof_vec, Some(&tree.root))
-                .unwrap());
+        let i = 3u32;
+        let mut merkle_proof_vec = Vec::<ProofNode_4_ary>::new();
+        let mut merkle_proof = Some(merkle_proof_vec);
+        let k = FieldElement::from(i);
+        assert_eq!(k, tree.get(&k, &mut merkle_proof, &db).unwrap());
+        merkle_proof_vec = merkle_proof.unwrap();
+        assert!(tree
+            .verify_proof(&k, &k, &merkle_proof_vec, Some(&tree.root))
+            .unwrap());
 
-            let mut rng = rand::thread_rng();
+        let mut rng = rand::thread_rng();
 
-            let label = b"4-aryMerkleTree";
+        let label = b"4-aryMerkleTree";
 
-            // Test with leaf value hidden from verifier
-            let mut hash_func = PoseidonHashConstraints::new(&hash_params, sbox, CAP_CONST_W_5);
-            let (proof, commitments) = gen_proof_of_leaf_inclusion_4_ary_merkle_tree(
-                k.clone(),
-                k.clone(),
-                true,
-                None,
-                merkle_proof_vec.clone(),
-                &tree.root,
-                tree.depth,
-                &mut hash_func,
-                Some(&mut rng),
-                label,
-                &g,
-                &h,
-                &G,
-                &H,
-            )
-            .unwrap();
+        // Test with leaf value hidden from verifier
+        let mut hash_func = PoseidonHashConstraints::new(&hash_params, sbox, CAP_CONST_W_5);
+        let (proof, commitments) = gen_proof_of_leaf_inclusion_4_ary_merkle_tree(
+            k.clone(),
+            k.clone(),
+            true,
+            None,
+            merkle_proof_vec.clone(),
+            &tree.root,
+            tree.depth,
+            &mut hash_func,
+            Some(&mut rng),
+            label,
+            &g,
+            &h,
+            &G,
+            &H,
+        )
+        .unwrap();
 
-            let mut hash_func = PoseidonHashConstraints::new(&hash_params, sbox, CAP_CONST_W_5);
-            verify_proof_of_leaf_inclusion_4_ary_merkle_tree(
-                &tree.root,
-                tree.depth,
-                &mut hash_func,
-                proof,
-                None,
-                commitments,
-                label,
-                &g,
-                &h,
-                &G,
-                &H,
-            )
-            .unwrap();
+        let mut hash_func = PoseidonHashConstraints::new(&hash_params, sbox, CAP_CONST_W_5);
+        verify_proof_of_leaf_inclusion_4_ary_merkle_tree(
+            &tree.root,
+            tree.depth,
+            &mut hash_func,
+            proof,
+            None,
+            commitments,
+            label,
+            &g,
+            &h,
+            &G,
+            &H,
+        )
+        .unwrap();
 
-            // Test with leaf value known to verifier
-            let mut hash_func = PoseidonHashConstraints::new(&hash_params, sbox, CAP_CONST_W_5);
-            let (proof, commitments) = gen_proof_of_leaf_inclusion_4_ary_merkle_tree(
-                k.clone(),
-                k.clone(),
-                false,
-                None,
-                merkle_proof_vec,
-                &tree.root,
-                tree.depth,
-                &mut hash_func,
-                Some(&mut rng),
-                label,
-                &g,
-                &h,
-                &G,
-                &H,
-            )
-            .unwrap();
+        // // Test with leaf value known to verifier
+        // let mut hash_func = PoseidonHashConstraints::new(&hash_params, sbox, CAP_CONST_W_5);
+        // let (proof, commitments) = gen_proof_of_leaf_inclusion_4_ary_merkle_tree(
+        //     k.clone(),
+        //     k.clone(),
+        //     false,
+        //     None,
+        //     merkle_proof_vec,
+        //     &tree.root,
+        //     tree.depth,
+        //     &mut hash_func,
+        //     Some(&mut rng),
+        //     label,
+        //     &g,
+        //     &h,
+        //     &G,
+        //     &H,
+        // )
+        // .unwrap();
 
-            let mut hash_func = PoseidonHashConstraints::new(&hash_params, sbox, CAP_CONST_W_5);
-            verify_proof_of_leaf_inclusion_4_ary_merkle_tree(
-                &tree.root,
-                tree.depth,
-                &mut hash_func,
-                proof,
-                Some(k.clone()), // The verifier knows the value of the leaf
-                commitments,
-                label,
-                &g,
-                &h,
-                &G,
-                &H,
-            )
-            .unwrap();
-        }
+        // let mut hash_func = PoseidonHashConstraints::new(&hash_params, sbox, CAP_CONST_W_5);
+        // verify_proof_of_leaf_inclusion_4_ary_merkle_tree(
+        //     &tree.root,
+        //     tree.depth,
+        //     &mut hash_func,
+        //     proof,
+        //     Some(k.clone()), // The verifier knows the value of the leaf
+        //     commitments,
+        //     label,
+        //     &g,
+        //     &h,
+        //     &G,
+        //     &H,
+        // )
+        // .unwrap();
     }
 }

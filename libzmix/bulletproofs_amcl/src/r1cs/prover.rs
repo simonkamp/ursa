@@ -383,6 +383,7 @@ impl<'a, 'b> Prover<'a, 'b> {
 
         // If the number of multiplications is not 0 or a power of 2, then pad the circuit.
         let n = self.a_L.len();
+        println!("number of constraints: {}", n);
         let n2 = n - n1;
         let padded_n = n.next_power_of_two();
         let pad = padded_n - n;
